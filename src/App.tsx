@@ -1,0 +1,2377 @@
+// App.tsx — Main React SPA component for Who's Nearby
+// Covers: initialization, profile setup, grid/map views, filters, payments,
+// profile card, games menu, footer navigation.
+
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
+import { useTonWallet, useTonConnectUI } from '@tonconnect/ui-react';
+
+import bustaIcon from './assets/Bustagames.jpg';
+import tonflipIcon from './assets/Tonflip.jpg';
+import photifyIcon from './assets/Photify.jpg';
+import { APP_ENTRIES, resolveAppEntry, type AppEntryId } from './config/entries';
+import {
+  BottomNavigationModule,
+  NearbyGridModule,
+  ProfileCompletionModule,
+} from './modules';
+
+const MapView = lazy(() => import('./modules/map/NearbyMapModule'));
+
+declare global {
+  interface Window {
+    Telegram?: {
+      WebApp?: {
+        initData?: string;
+        initDataUnsafe?: {
+          user?: {
+            id: number;
+            first_name: string;
+            last_name?: string;
+            username?: string;
+            photo_url?: string;
+            language_code?: string;
+          };
+          start_param?: string;
+        };
+        ready?: () => void;
+        expand?: () => void;
+        openTelegramLink?: (url: string) => void;
+        openLink?: (url: string) => void;
+        showAlert?: (message: string) => void;
+        openInvoice?: (url: string, callback?: (status: string) => void) => void;
+        CloudStorage?: {
+          setItem?: (key: string, value: string, callback?: (error?: string) => void) => void;
+          getItem?: (key: string, callback?: (error?: string, value?: string) => void) => void;
+        };
+      };
+    };
+  }
+}
+
+const PAYMENT_WORKER_URL = 'https://whosnearbybot.mileschan852.workers.dev';
+const WORKER_REQUEST_TIMEOUT_MS = 12_000;
+
+type LangKey = 'en' | 'zh-CN' | 'zh-TW' | 'ja' | 'ko' | 'ru';
+
+type FlyingMessageCopy = {
+  placeholder: string;
+  send: string;
+  free: string;
+  priceLabel: string;
+  save: string;
+  sending: string;
+  cooldown: string;
+  invoiceFallback: string;
+};
+
+type FlyingMessage = {
+  id: string;
+  tg_id: string;
+  text: string;
+  from_name: string;
+  created_at: string;
+  audience_bot: 'botA' | 'botB';
+};
+
+type RafflePrizeKey = 'vip' | 'filter' | 'invisible' | 'hide_age';
+
+type RaffleWinner = {
+  prizeKey: RafflePrizeKey;
+  username: string;
+  expiresAt: string;
+  isYou: boolean;
+};
+
+type RaffleDraw = {
+  roundKey: string;
+  drawnAt: string;
+  winners: RaffleWinner[];
+};
+
+type RaffleState = {
+  roundKey: string;
+  closesAt: string;
+  serverNow: string;
+  ticketCount: number;
+  userTicketCount: number;
+  canPurchase: boolean;
+  usernameRequired: boolean;
+  latestDraw: RaffleDraw | null;
+};
+
+const raffleUiCopy: Record<LangKey, {
+  button: string;
+  summary: string;
+  drawTime: string;
+  shortfallRule: string;
+  countdown: string;
+  pool: string;
+  yours: string;
+  usernameRequired: string;
+  adultProfileRequired: string;
+  processing: string;
+  ticketPurchased: string;
+  paymentProcessing: string;
+  invoiceFallback: string;
+  paymentCancelled: string;
+  announcement: string;
+  winnerMessage: string;
+  prizes: Record<RafflePrizeKey, string>;
+}> = {
+  en: {
+    button: 'Buy ticket',
+    summary: 'VIP · filters · invisible · hide age',
+    drawTime: '1st · 8 PM HKT',
+    shortfallRule: '4+ tickets + 4 users: 4 distinct winners; shortfall: VIP only; no tickets: no rollover',
+    countdown: '{d}d {h}:{m}:{s}',
+    pool: 'Pool: {count}',
+    yours: 'Yours: {count}',
+    usernameRequired: 'Set a Telegram username before buying a ticket.',
+    adultProfileRequired: 'Complete an adult profile before buying a ticket.',
+    processing: 'Opening payment…',
+    ticketPurchased: 'Ticket confirmed.',
+    paymentProcessing: 'Payment received; the ticket is still being confirmed.',
+    invoiceFallback: 'Continue in Telegram; the ticket appears after payment is confirmed.',
+    paymentCancelled: 'Payment cancelled.',
+    announcement: 'Raffle',
+    winnerMessage: '{prize} winner: @{username}',
+    prizes: {
+      vip: '1-month VIP',
+      filter: '1-month filter unlock',
+      invisible: '1-month invisible mode',
+      hide_age: '1-month hide age',
+    },
+  },
+  'zh-CN': {
+    button: '购买抽奖券',
+    summary: 'VIP · 筛选 · 隐身 · 隐藏年龄',
+    drawTime: '每月1日 · 香港时间20:00',
+    shortfallRule: '至少4张票且4位用户：4位不同得主；不足仅抽1位VIP；无票不结转',
+    countdown: '{d}天 {h}:{m}:{s}',
+    pool: '本期票数：{count}',
+    yours: '你的票：{count}',
+    usernameRequired: '请先设置 Telegram 用户名，再购买抽奖券。',
+    adultProfileRequired: '请先完成成人资料，再购买抽奖券。',
+    processing: '正在打开付款…',
+    ticketPurchased: '抽奖券已确认。',
+    paymentProcessing: '已收到付款，正在确认抽奖券。',
+    invoiceFallback: '请在 Telegram 中继续付款；确认后抽奖券会显示。',
+    paymentCancelled: '付款已取消。',
+    announcement: '抽奖结果',
+    winnerMessage: '{prize}得主：@{username}',
+    prizes: {
+      vip: '一个月 VIP',
+      filter: '一个月筛选解锁',
+      invisible: '一个月隐身模式',
+      hide_age: '一个月隐藏年龄',
+    },
+  },
+  'zh-TW': {
+    button: '購買抽獎券',
+    summary: 'VIP · 篩選 · 隱形 · 隱藏年齡',
+    drawTime: '每月1日 · 香港時間20:00',
+    shortfallRule: '至少4張票且4位用戶：4位不同得主；不足僅抽1位VIP；無票不結轉',
+    countdown: '{d}天 {h}:{m}:{s}',
+    pool: '本期票數：{count}',
+    yours: '你的票：{count}',
+    usernameRequired: '請先設定 Telegram 使用者名稱，再購買抽獎券。',
+    adultProfileRequired: '請先完成成人資料，再購買抽獎券。',
+    processing: '正在開啟付款…',
+    ticketPurchased: '抽獎券已確認。',
+    paymentProcessing: '已收到付款，正在確認抽獎券。',
+    invoiceFallback: '請在 Telegram 中繼續付款；確認後抽獎券會顯示。',
+    paymentCancelled: '付款已取消。',
+    announcement: '抽獎結果',
+    winnerMessage: '{prize}得主：@{username}',
+    prizes: {
+      vip: '一個月 VIP',
+      filter: '一個月篩選解鎖',
+      invisible: '一個月隱形模式',
+      hide_age: '一個月隱藏年齡',
+    },
+  },
+  ja: {
+    button: 'チケット購入',
+    summary: 'VIP・フィルター・透明化・年齢非表示',
+    drawTime: '毎月1日 · 香港時間20:00',
+    shortfallRule: 'チケット4枚以上・4人以上で別々の4人。不足はVIP1名のみ。無票は繰越なし',
+    countdown: '{d}日 {h}:{m}:{s}',
+    pool: '販売数: {count}',
+    yours: '所持数: {count}',
+    usernameRequired: 'チケット購入にはTelegramユーザー名が必要です。',
+    adultProfileRequired: '成人プロフィールを完了してから購入してください。',
+    processing: '決済を開いています…',
+    ticketPurchased: 'チケットが確定しました。',
+    paymentProcessing: '決済を受け付けました。チケットを確認中です。',
+    invoiceFallback: 'Telegramで決済を続けてください。確認後にチケットが表示されます。',
+    paymentCancelled: '決済はキャンセルされました。',
+    announcement: '抽選結果',
+    winnerMessage: '{prize}の当選者: @{username}',
+    prizes: {
+      vip: '1か月VIP',
+      filter: '1か月フィルター解除',
+      invisible: '1か月透明モード',
+      hide_age: '1か月年齢非表示',
+    },
+  },
+  ko: {
+    button: '티켓 구매',
+    summary: 'VIP · 필터 · 비공개 · 나이 숨기기',
+    drawTime: '매월 1일 · 홍콩 시간 20:00',
+    shortfallRule: '티켓 4장 이상·사용자 4명 이상이면 서로 다른 4명 당첨; 부족하면 VIP 1명만. 티켓 없으면 이월 없음',
+    countdown: '{d}일 {h}:{m}:{s}',
+    pool: '총 티켓: {count}',
+    yours: '내 티켓: {count}',
+    usernameRequired: '티켓을 구매하려면 Telegram 사용자 이름이 필요합니다.',
+    adultProfileRequired: '성인 프로필을 완료한 뒤 구매할 수 있습니다.',
+    processing: '결제 창을 여는 중…',
+    ticketPurchased: '티켓이 확인되었습니다.',
+    paymentProcessing: '결제가 접수되었습니다. 티켓을 확인 중입니다.',
+    invoiceFallback: 'Telegram에서 결제를 계속하세요. 확인 후 티켓이 표시됩니다.',
+    paymentCancelled: '결제가 취소되었습니다.',
+    announcement: '추첨 결과',
+    winnerMessage: '{prize} 당첨자: @{username}',
+    prizes: {
+      vip: '1개월 VIP',
+      filter: '1개월 필터 잠금 해제',
+      invisible: '1개월 비공개 모드',
+      hide_age: '1개월 나이 숨기기',
+    },
+  },
+  ru: {
+    button: 'Купить билет',
+    summary: 'VIP · фильтры · невидимость · скрытие возраста',
+    drawTime: '1-го числа · 20:00 по Гонконгу',
+    shortfallRule: '4+ билета и 4 человека — 4 разных победителя; иначе только VIP; без билетов переноса нет',
+    countdown: '{d}д {h}:{m}:{s}',
+    pool: 'Билетов: {count}',
+    yours: 'Ваши: {count}',
+    usernameRequired: 'Для покупки билета нужен username в Telegram.',
+    adultProfileRequired: 'Перед покупкой заполните профиль совершеннолетнего.',
+    processing: 'Открываем оплату…',
+    ticketPurchased: 'Билет подтверждён.',
+    paymentProcessing: 'Оплата получена, билет ещё подтверждается.',
+    invoiceFallback: 'Продолжите оплату в Telegram; билет появится после подтверждения.',
+    paymentCancelled: 'Оплата отменена.',
+    announcement: 'Розыгрыш',
+    winnerMessage: 'Победитель ({prize}): @{username}',
+    prizes: {
+      vip: 'VIP на 1 месяц',
+      filter: 'Фильтр на 1 месяц',
+      invisible: 'Невидимость на 1 месяц',
+      hide_age: 'Скрытие возраста на 1 месяц',
+    },
+  },
+};
+
+const flyingMessageCopy: Record<LangKey, FlyingMessageCopy> = {
+  en: {
+    placeholder: 'Send a flying message…', send: 'Send', free: 'FREE',
+    priceLabel: 'Flying message price (Stars)', save: 'Save', sending: 'Sending…',
+    cooldown: 'Send again in {seconds}s', invoiceFallback: 'Complete the invoice in Telegram. Your message appears after payment is confirmed.',
+  },
+  'zh-CN': {
+    placeholder: '发送飞行消息…', send: '发送', free: '免费',
+    priceLabel: '飞行消息价格（Stars）', save: '保存', sending: '发送中…',
+    cooldown: '{seconds} 秒后可再次发送', invoiceFallback: '请在 Telegram 中完成付款。确认付款后消息将显示。',
+  },
+  'zh-TW': {
+    placeholder: '傳送飛行訊息…', send: '傳送', free: '免費',
+    priceLabel: '飛行訊息價格（Stars）', save: '儲存', sending: '傳送中…',
+    cooldown: '{seconds} 秒後可再次傳送', invoiceFallback: '請在 Telegram 中完成付款。確認付款後訊息將顯示。',
+  },
+  ja: {
+    placeholder: 'フライングメッセージを送信…', send: '送信', free: '無料',
+    priceLabel: 'フライングメッセージの料金（Stars）', save: '保存', sending: '送信中…',
+    cooldown: 'あと {seconds} 秒で送信できます', invoiceFallback: 'Telegramで支払いを完了してください。決済確認後にメッセージが表示されます。',
+  },
+  ko: {
+    placeholder: '플라잉 메시지 보내기…', send: '보내기', free: '무료',
+    priceLabel: '플라잉 메시지 가격(Stars)', save: '저장', sending: '전송 중…',
+    cooldown: '{seconds}초 후 다시 보낼 수 있습니다', invoiceFallback: 'Telegram에서 결제를 완료하세요. 결제가 확인되면 메시지가 표시됩니다.',
+  },
+  ru: {
+    placeholder: 'Отправить летящее сообщение…', send: 'Отправить', free: 'БЕСПЛАТНО',
+    priceLabel: 'Цена сообщения (Stars)', save: 'Сохранить', sending: 'Отправка…',
+    cooldown: 'Повторная отправка через {seconds} с', invoiceFallback: 'Завершите оплату в Telegram. Сообщение появится после подтверждения.',
+  },
+};
+
+const translations: Record<LangKey, Record<string, string>> = {
+  'en': {
+    loading: 'Loading app...', locationRequired: 'Location Access Required', locationMessage: "Location permission is mandatory to use Who's Nearby. Please enable location access in your browser or Telegram settings and restart the app.", accessDenied: 'Access Denied', underageMessage: 'The app is for adults only. Access has been locked for this account due to age restrictions.', completeProfile: 'Complete Your Profile', profileWarning: 'Warning: This cannot be changed in the future. Information entered here affects who you can see and interact with.', dob: 'Date of Birth:', imA: "I'm a", seeking: 'seeking', man: 'man', woman: 'woman', nonBinary: 'non-binary', men: 'men', women: 'women', everyone: 'everyone', height: 'Height:', selectHeight: 'Select height', weight: 'Weight:', selectWeight: 'Select weight', tapToChange: 'tap to change your preference:', mode: 'Mode:', browsingOnly: 'Browsing only - You cannot send not receive private message from others', onlineOnly: 'Online only - You are visible on grid but not on map, map is inaccessible', meetUp: 'Meet up - You are visible on grid and map', saveProfile: 'Save Profile & Continue', whosNearby: "Who's Nearby", filter: 'Filter', refresh: 'Refresh', grid: 'Grid', chat: 'Chat', map: 'Map', wallet: 'Wallet', filterUsers: 'Filter Users', ageRange: 'Age Range', preferenceMatcher: 'Preference Matcher', rolePreference: 'Role Preference', safetyPreference: 'Safety Preference', playstylePreference: 'Playstyle Preference', groupSize: 'Group Size', applyFilters: 'Apply Filters', ageHidden: 'Age Hidden (Click to Show)', ageShown: 'Age Shown (Click to Hide)', expires: 'Expires:', sendMessage: 'Send Message', unlockPreference: 'Change Profile & Preferences', iGotStuff: 'I got stuff', unlockPreferencePrompt: 'Changing your profile/preferences requires a one-time payment of 1000 Telegram Stars. Proceed to payment?', invisiblePrompt: 'Going invisible requires a 30-day subscription for 3000 Telegram Stars. Proceed to payment?', hideAgePrompt: 'Hiding your age for 30 days costs 1000 Telegram Stars. Proceed to payment?', filterSubPrompt: 'Customizing this filter requires a subscription. Proceed to payment?', paymentCancelled: 'Payment was cancelled or failed.', paymentProcessing: 'Payment received; access is still updating. Please refresh shortly.', errorSaving: 'Error saving profile:', fillAll: 'Please fill in all required questions to continue.',
+    'Versatile': 'Versatile', 'Top': 'Top', 'Bottom': 'Bottom', 'Side': 'Side', 'VT': 'Vers / Top', 'VB': 'Vers / Bottom',
+    'Safe': 'Safe (Condoms)', 'Raw': 'Raw (Bareback)',
+    'Clean': 'Clean (No Drugs)', 'Party': 'Party (Chemsex)', 'Party✓': 'Party✓',
+    '1on1_setup': '1-on-1 (only)', 'group_setup': 'group (only)', 'DoesntMatter_setup': "Doesn't matter",
+    '1on1': '1-on-1', 'group': 'group', 'DoesntMatter': "Doesn't matter",
+    'Host': 'Host', 'Travel': 'Travel', 'Off': 'Off', 'Anywhere': 'Anywhere', 'Role': 'Role', 'Safety': 'Safety', 'Playstyle': 'Playstyle', 'How Many': 'How Many', 'Where': 'Where',
+    you: 'You', away: 'away', online: 'Online', offline: 'Offline',
+    mAgo: '{n}m ago', hAgo: '{n}h ago', dAgo: '{n}d ago',
+    m2m: 'M2M', admin: 'Admin', unsubscribed: 'Unsubscribed',
+    subscribedUntil: 'Subscribed until {d}', expired: 'Expired',
+    privateNote: 'Private note', notePlaceholder: 'Private note (100 chars max)',
+    forceReset: 'Force reset', gamesApps: 'Games & Apps', resetProfile: 'Reset Profile',
+    selectedUser: 'Selected user: {n}', profileReset: 'Profile reset.', resetFailed: 'Reset failed.',
+    forceResetConfirm: 'Force reset profile of {n}?',
+    vip: 'VIP', vipUnlimited: 'VIP · ∞', adminMenu: 'Admin Menu', adminVipList: 'Admin / VIP List', owner: 'Owner', addRole: 'Add', removeRole: 'Remove', roleUsernamePlaceholder: 'username (without @)', roleUpdateFailed: 'Update failed.', ownerImmutable: 'The owner role cannot be changed.', noRolesYet: 'No admins or VIPs yet.', close: 'Close', grantVipAll: 'Grant VIP to all', revokeVipAll: 'Revoke VIP for all', forceResetAll: 'Force reset all users', forceResetAllConfirm: 'Reset ALL users? Everyone will see the "complete your info" screen on next login.', resetAllDone: 'All users reset.', period_1w: '1 week', period_1mo: '1 month', period_3mo: '3 months', period_6mo: '6 months', period_1y: '1 year'
+  },
+  'zh-CN': {
+    loading: '正在加载应用...', locationRequired: '需要位置权限', locationMessage: '使用"附近"功能必须获得位置权限。请在浏览器或 Telegram 设置中启用位置访问并重新启动应用。', accessDenied: '拒绝访问', underageMessage: '本应用仅限成年人使用。由于年龄限制，该账户已被锁定。', completeProfile: '完善您的个人资料', profileWarning: '警告：此信息将来无法更改。此处填写的内容会影响您可以看到和互动的用户。', dob: '出生日期：', imA: '我是', seeking: '寻找', man: '男性', woman: '女性', nonBinary: '非二元性别', men: '男性', women: '女性', everyone: '所有人', height: '身高：', selectHeight: '选择身高', weight: '体重：', selectWeight: '选择体重', tapToChange: '点击更改您的偏好：', mode: '模式：', browsingOnly: '仅浏览', onlineOnly: '仅在线', meetUp: '约会中', saveProfile: '保存资料并继续', whosNearby: '附近的人', filter: '筛选', refresh: '刷新', grid: '网格', chat: '聊天', map: '地图', wallet: '钱包', filterUsers: '筛选用户', ageRange: '年龄范围', preferenceMatcher: '偏好匹配器', rolePreference: '角色偏好', safetyPreference: '安全偏好', playstylePreference: '游戏风格偏好', groupSize: '群组人数', applyFilters: '应用筛选', ageHidden: '年龄已隐藏', ageShown: '年龄已显示', expires: '到期时间：', sendMessage: '发送消息', unlockPreference: '更改资料与偏好', iGotStuff: '我有货', unlockPreferencePrompt: '更改个人资料与偏好需要支付 1000 Telegram Stars。是否继续支付？', invisiblePrompt: '隐身需要订阅 30 天，费用为 3000 Telegram Stars。是否继续支付？', hideAgePrompt: '隐藏年龄需要订阅 30 天，费用为 1000 Telegram Stars。是否继续支付？', filterSubPrompt: '自定义此筛选条件需要订阅。是否继续支付？', paymentCancelled: '支付已取消或失败。', errorSaving: '保存资料出错：', fillAll: '请填写所有必填问题以继续。',
+    'Versatile': '0.5 (��攻可受)', 'Top': '1 (攻)', 'Bottom': '0 (受)', 'Side': 'Side (边缘)', 'VT': '可攻可受 / 攻', 'VB': '可攻可受 / 受',
+    'Safe': 'Safe (戴套)', 'Raw': 'Raw (���套)',
+    'Clean': 'Clean (无药)', 'Party': 'Party (嗨药)', 'Party✓': 'Party✓',
+    '1on1_setup': '单对单 (仅限1on1)', 'group_setup': '群组 (仅限群组)', 'DoesntMatter_setup': '无所谓',
+    '1on1': '单�����单', 'group': '群组', 'DoesntMatter': '无所谓',
+    'Host': '提供场地 (Host)', 'Travel': '上门 (Travel)', 'Off': '关闭', 'Anywhere': '任意', 'Role': '角色', 'Safety': '安全', 'Playstyle': '风格', 'How Many': '人数', 'Where': '地点',
+    you: '你', away: '远', online: '在线', offline: '离线',
+    mAgo: '{n}分钟前', hAgo: '{n}小时前', dAgo: '{n}天前',
+    m2m: '男找男 (M2M)', admin: '管理员', unsubscribed: '未订阅',
+    subscribedUntil: '已订阅至 {d}', expired: '已过期',
+    privateNote: '私密备注', notePlaceholder: '私密备注 (最多100字)',
+    forceReset: '强制重置', gamesApps: '游戏和应用',
+    selectedUser: '��选中用户: {n}', profileReset: '资料已重置。', resetFailed: '重置失败。',
+    forceResetConfirm: '强制重置 {n} 的资料？',
+    vip: 'VIP', vipUnlimited: 'VIP · ∞', adminMenu: '管理菜单', adminVipList: '管理员 / VIP 列表', owner: '拥有者', addRole: '添加', removeRole: '移除', roleUsernamePlaceholder: '用户名（不含 @）', roleUpdateFailed: '更新失败。', ownerImmutable: '拥有者角色无法更改。', noRolesYet: '暂无管理员或 VIP。', close: '关闭', grantVipAll: '为所有用户授予 VIP', revokeVipAll: '取消所有用户 VIP', forceResetAll: '强制重置所有用户', forceResetAllConfirm: '重置所有用户？所有人下次登录时都会看到"完善资料"页面。', resetAllDone: '所有用户已重置。', period_1w: '1 周', period_1mo: '1 个月', period_3mo: '3 个月', period_6mo: '6 个月', period_1y: '1 年'
+  },
+  'zh-TW': {
+    loading: '正在載入應用程式...', locationRequired: '需要位置權限', locationMessage: '使用「附近」功能必須獲得位置權限。請在瀏覽器或 Telegram 設定中啟用位置存取並重新啟動應用程式。', accessDenied: '存取被拒', underageMessage: '本應用程式僅限成年人使用。由於年齡限制，該帳戶已被鎖定。', completeProfile: '完善您的個人資料', profileWarning: '警告：此資訊未來無法更改。此處填寫的內容會影響您可以看到和互動的使用者。', dob: '出生日期：', imA: '我是', seeking: '尋找', man: '男性', woman: '女性', nonBinary: '非二元性別', men: '男性', women: '女性', everyone: '所有人', height: '身高：', selectHeight: '選擇身高', weight: '體重：', selectWeight: '選擇體重', tapToChange: '點擊更改您的偏好：', mode: '模式：', browsingOnly: '僅瀏覽', onlineOnly: '僅線上', meetUp: '見面中', saveProfile: '儲存資料並繼續', whosNearby: '附近的人', filter: '篩選', refresh: '重新整理', grid: '網格', chat: '聊天', map: '地圖', wallet: '錢包', filterUsers: '篩選使用者', ageRange: '年齡範圍', preferenceMatcher: '偏好匹配器', rolePreference: '角色偏好', safetyPreference: '安全偏好', playstylePreference: '風格偏好', groupSize: '群組人數', applyFilters: '套用篩選', ageHidden: '年齡已隱藏', ageShown: '年齡已顯示', expires: '到期時間：', sendMessage: '傳送訊息', unlockPreference: '更改資料與偏好', iGotStuff: '我有貨', unlockPreferencePrompt: '更改個人資料與偏好需要支付 1000 Telegram Stars。是否繼續支付？', invisiblePrompt: '隱身需要訂閱 30 天，費用為 3000 Telegram Stars。是否繼續支付？', hideAgePrompt: '隱藏年齡需要訂閱 30 天，費用為 1000 Telegram Stars。是否繼續支付？', filterSubPrompt: '自訂此篩選條件需要訂閱。是否繼續支付？', paymentCancelled: '付款已取消或失敗。', errorSaving: '儲存資料出錯：', fillAll: '請填寫所有必填問題以繼續。',
+    'Versatile': '0.5 (不分)', 'Top': '1 (頂)', 'Bottom': '0 (底)', 'Side': 'Side (邊緣)', 'VT': '不分 / 頂', 'VB': '不分 / 底',
+    'Safe': 'Safe (戴套)', 'Raw': 'Raw (無套)',
+    'Clean': 'Clean (無藥)', 'Party': 'Party (嗨藥/煙)', 'Party✓': 'Party✓',
+    '1on1_setup': '單對單 (僅限1on1)', 'group_setup': '群組 (僅限群組)', 'DoesntMatter_setup': '無所謂',
+    '1on1': '單對單', 'group': '群組', 'DoesntMatter': '無所謂',
+    'Host': '提供場地 (Host)', 'Travel': '上門 (Travel)', 'Off': '關閉', 'Anywhere': '任意', 'Role': '角色', 'Safety': '安全', 'Playstyle': '風格', 'How Many': '人數', 'Where': '地點',
+    you: '你', away: '遠', online: '在線', offline: '離線',
+    mAgo: '{n}分鐘前', hAgo: '{n}小時前', dAgo: '{n}天前',
+    m2m: '男找男 (M2M)', admin: '管理員', unsubscribed: '未訂閱',
+    subscribedUntil: '已訂閱至 {d}', expired: '已過期',
+    privateNote: '私密備註', notePlaceholder: '私密備註 (最多100字)',
+    forceReset: '強制重置', gamesApps: '遊戲和應用',
+    selectedUser: '已選中用戶: {n}', profileReset: '資料已重置。', resetFailed: '重置失敗。',
+    forceResetConfirm: '強制重置 {n} 的資料？',
+    vip: 'VIP', vipUnlimited: 'VIP · ∞', adminMenu: '管理選單', adminVipList: '管理員 / VIP 列表', owner: '擁有者', addRole: '新增', removeRole: '移除', roleUsernamePlaceholder: '用戶名（不含 @）', roleUpdateFailed: '更新失敗。', ownerImmutable: '擁有者角色無法更改。', noRolesYet: '暫無管理員或 VIP。', close: '關閉', grantVipAll: '為所有用戶授予 VIP', revokeVipAll: '取消所有用戶 VIP', forceResetAll: '強制重置所有用戶', forceResetAllConfirm: '重置所有用戶？所有人下次登入時都會看到「完善資料」頁面。', resetAllDone: '所有用戶已重置。', period_1w: '1 週', period_1mo: '1 個月', period_3mo: '3 個月', period_6mo: '6 個月', period_1y: '1 年'
+  },
+  'ja': {
+    loading: 'アプリを読み込んでいます...', locationRequired: '位置情報のアクセスが必要です', locationMessage: '位置情報の許可が必須です。ブラウザまたは Telegram の設定で位置情報を有効にし、アプリを再起動してください。', accessDenied: 'アクセスが拒否されました', underageMessage: 'このアプリは成人向けです。年齢制限により、このアカウントのアクセスはロックされました。', completeProfile: 'プロフィールを完成させる', profileWarning: '警告：これは後から変更できません。ここで入力した情報は、表示・交流できる相手に影響します。', dob: '生年月日：', imA: '私は', seeking: '探しています：', man: '男性', woman: '女性', nonBinary: 'ノンバイナリー', men: '男性', women: '女性', everyone: 'すべての人', height: '身長：', selectHeight: '身長を選択', weight: '体重：', selectWeight: '体重を選択', tapToChange: 'タップして好みを変更：', mode: 'モード：', browsingOnly: '閲覧のみ', onlineOnly: 'オンラインのみ', meetUp: 'ミートアップ', saveProfile: 'プロフィールを保存して続ける', whosNearby: '近くの人', filter: 'フィルター', refresh: '更新', grid: 'グリッド', chat: 'チャット', map: 'マップ', wallet: 'ウォレット', filterUsers: 'ユーザーをフィルター', ageRange: '年齢層', preferenceMatcher: '好みマッチング', rolePreference: 'ロールの好み', safetyPreference: '安全の好み', playstylePreference: 'プレイスタイルの好み', groupSize: 'グループサイズ', applyFilters: 'フィルターを適用', ageHidden: '年齢非表示', ageShown: '年齢表示', expires: '有効期限：', sendMessage: 'メッセージを送る', unlockPreference: 'プロフィールと好みを変更', iGotStuff: '持ってるよ', unlockPreferencePrompt: 'プロフィールの変更には1000 Starsが必要です。', invisiblePrompt: '透明化には3000 Starsが必要です。', hideAgePrompt: '年齢非表示には1000 Starsが必要です。', filterSubPrompt: 'フィルターのカスタマイズにはサブスクリプションが必要です。', paymentCancelled: '支払いがキャンセルされました。', errorSaving: 'エラー：', fillAll: 'すべての必須項目を入力してください。',
+    'Versatile': 'リバ (Vers)', 'Top': 'タチ (Top)', 'Bottom': 'ネコ (Btm)', 'Side': 'サイド (Side)', 'VT': 'リバ/タチ (VT)', 'VB': 'リバ/ネコ (VB)',
+    'Safe': 'ゴムあり (Safe)', 'Raw': '生/中出し (Raw)',
+    'Clean': 'シラフ (Clean)', 'Party': 'ケミ (Party)', 'Party✓': 'Party✓',
+    '1on1_setup': '1対1 (のみ)', 'group_setup': 'グル���プ (のみ)', 'DoesntMatter_setup': 'こだわらない',
+    '1on1': '1対1', 'group': 'グループ', 'DoesntMatter': 'こだわらない',
+    'Host': '部屋あり (Host)', 'Travel': '訪問 (Travel)', 'Off': 'オフ', 'Anywhere': 'どこでも', 'Role': '役割', 'Safety': '安全', 'Playstyle': 'スタイル', 'How Many': '人数', 'Where': '場所',
+    you: 'あなた', away: '先', online: 'オンライン', offline: 'オフライン',
+    mAgo: '{n}分前', hAgo: '{n}時間前', dAgo: '{n}日前',
+    m2m: '男×男 (M2M)', admin: '管理者', unsubscribed: '未購読',
+    subscribedUntil: '購読期限: {d}', expired: '期限切れ',
+    privateNote: 'プライベートメモ', notePlaceholder: 'プライベートメモ (最大100文���)',
+    forceReset: '強制リセット', gamesApps: 'ゲーム&アプリ',
+    selectedUser: '選択したユーザー: {n}', profileReset: 'プロフィールをリセットしました。', resetFailed: 'リセットに失敗しま��た。',
+    forceResetConfirm: '{n} のプロフィールを強制リセットしますか？',
+    vip: 'VIP', vipUnlimited: 'VIP · ∞', adminMenu: '管理メニュー', adminVipList: '管理者 / VIP リスト', owner: 'オーナー', addRole: '追加', removeRole: '削除', roleUsernamePlaceholder: 'ユーザー名（@なし）', roleUpdateFailed: '更新に失敗しました。', ownerImmutable: 'オーナー権限は変更できません。', noRolesYet: '管理者または VIP はまだいません。', close: '閉じる', grantVipAll: '全ユーザーに VIP を付与', revokeVipAll: '全ユーザーの VIP を取消', forceResetAll: '全ユーザーを強制リセット', forceResetAllConfirm: '全ユーザーをリセットしますか？全員が次回ログイン時に「情報入力」画面を見ます。', resetAllDone: '全ユーザーをリセットしました。', period_1w: '1 週間', period_1mo: '1 か月', period_3mo: '3 か月', period_6mo: '6 か月', period_1y: '1 年'
+  },
+  'ko': {
+    loading: '앱 로딩 중...', locationRequired: '위치 접근 권한 필요', locationMessage: '위치 권한이 필수입니다. 브라우저 또는 Telegram 설정에서 위치 접근을 허용하고 앱을 다시 시작하세요.', accessDenied: '접근 거부됨', underageMessage: '이 앱은 성인 전용입니다. 연령 제한으로 이 계정은 잠겼습니다.', completeProfile: '프로필 완성하기', profileWarning: '경고: 이는 나중에 변경할 수 없습니다. 여기 입력한 정보는 볼 수 있고 상호작용할 수 있는 상대에게 영향을 줍니다.', dob: '생년월일:', imA: '나는', seeking: '찾는 대상:', man: '남성', woman: '여성', nonBinary: '논바이너리', men: '남성', women: '여성', everyone: '모두', height: '키:', selectHeight: '키 선택', weight: '체중:', selectWeight: '체중 선택', tapToChange: '탭하여 선호도 변경:', mode: '모드:', browsingOnly: '브라우징 전용', onlineOnly: '온라인 전용', meetUp: '만남', saveProfile: '프로필 저장 및 계속', whosNearby: '내 주변', filter: '필터', refresh: '새로고침', grid: '그리드', chat: '채팅', map: '지도', wallet: '지갑', filterUsers: '사용자 필터', ageRange: '연령대', preferenceMatcher: '취향 매칭', rolePreference: '포지션 선호', safetyPreference: '안전 선호', playstylePreference: '플레이스타일 선호', groupSize: '그룹 인원', applyFilters: '필터 적용', ageHidden: '나이 숨김', ageShown: '나이 표시', expires: '만료일:', sendMessage: '메시지 보내기', unlockPreference: '프로필 변경', iGotStuff: '나 있음', unlockPreferencePrompt: '프로필 변경 1000 Stars 결제?', invisiblePrompt: '숨김 모드 3000 Stars 결제?', hideAgePrompt: '나이 숨기기 1000 Stars 결제?', filterSubPrompt: '필터 변경 구독 필요.', paymentCancelled: '결제 취소됨.', errorSaving: '오류:', fillAll: '필수 항목을 입력해주세요.',
+    'Versatile': '올 (Vers)', 'Top': '탑 (Top)', 'Bottom': '바텀 (Btm)', 'Side': '사이드 (Side)', 'VT': '버스/탑 (VT)', 'VB': '버스/바텀 (VB)',
+    'Safe': '안전/콘돔 (Safe)', 'Raw': '노콘 (Raw)',
+    'Clean': '노약 (Clean)', 'Party': '파티/약 (Party)', 'Party✓': 'Party✓',
+    '1on1_setup': '1대1 (전용)', 'group_setup': '그룹 (전용)', 'DoesntMatter_setup': '상관없음',
+    '1on1': '1대1', 'group': '그룹', 'DoesntMatter': '상관없음',
+    'Host': '호스트 (방 있음)', 'Travel': '이동가능 (Travel)', 'Off': '꺼짐', 'Anywhere': '상관없음', 'Role': '포지션', 'Safety': '안전', 'Playstyle': '스타일', 'How Many': '인원', 'Where': '장소',
+    you: '나', away: '거리', online: '온라인', offline: '오프라인',
+    mAgo: '{n}분 전', hAgo: '{n}시간 전', dAgo: '{n}일 전',
+    m2m: '남↔남 (M2M)', admin: '관리자', unsubscribed: '미구독',
+    subscribedUntil: '구독 만료: {d}', expired: '만료됨',
+    privateNote: '개인 메모', notePlaceholder: '개인 메모 (최대 100자)',
+    forceReset: '강제 초기화', gamesApps: '게임 & 앱',
+    selectedUser: '선택한 사용자: {n}', profileReset: '프로필이 초기화되었습니다.', resetFailed: '초기화에 실패했습니다.',
+    forceResetConfirm: '{n} 님의 프로필을 강제 초기화할까요?',
+    vip: 'VIP', vipUnlimited: 'VIP · ∞', adminMenu: '관리자 메뉴', adminVipList: '관리자 / VIP 목록', owner: '소유자', addRole: '추가', removeRole: '삭제', roleUsernamePlaceholder: '사용자명 (@ 제외)', roleUpdateFailed: '업데이트 실패.', ownerImmutable: '소유자 권한은 변경할 수 없습니다.', noRolesYet: '아직 관리자나 VIP가 없습니다.', close: '닫기', grantVipAll: '모든 사용자에게 VIP 부여', revokeVipAll: '모든 사용자 VIP 해제', forceResetAll: '모든 사용자 강제 초기화', forceResetAllConfirm: '모든 사용자를 초기화할까요? 모두 다음 로그인 시 "정보 입력" 화면을 보게 됩니다.', resetAllDone: '모든 사용자가 초기화되었습니다.', period_1w: '1주', period_1mo: '1개월', period_3mo: '3개월', period_6mo: '6개월', period_1y: '1년'
+  },
+  'ru': {
+    loading: 'Загрузка...', locationRequired: 'Требуется геолокация', locationMessage: 'Разрешение на геолокацию обязательно. Включите доступ к местоположению в браузере или настройках Telegram и перезапустите приложение.', accessDenied: 'Доступ запрещен', underageMessage: 'Приложение только для взрослых. Доступ к этому аккаунту заблокирован из-за возрастных ограничений.', completeProfile: 'Заполните профиль', profileWarning: 'Предупреждение: это нельзя изменить. Введённые здесь данные влияют на то, кого вы видите и с кем взаимодействуете.', dob: 'Дата рождения:', imA: 'Я', seeking: 'ищу', man: 'мужчину', woman: 'женщину', nonBinary: 'небинарную', men: 'мужчин', women: 'женщин', everyone: 'всех', height: 'Рост:', selectHeight: 'Выберите рост', weight: 'Вес:', selectWeight: 'Выберите вес', tapToChange: 'нажмите, чтобы изменить:', mode: 'Режим:', browsingOnly: 'Только просмотр', onlineOnly: 'Только онлайн', meetUp: 'Встреча', saveProfile: 'Сохранить', whosNearby: 'Рядом', filter: 'Фильтр', refresh: 'Обновить', grid: 'Сетка', chat: 'Чат', map: 'Карта', wallet: 'Кошелек', filterUsers: 'Фильтры', ageRange: 'Возраст', preferenceMatcher: 'Подбор по предпочтениям', rolePreference: 'Роль', safetyPreference: 'Безопасность', playstylePreference: 'Стиль', groupSize: 'Размер группы', applyFilters: 'Применить', ageHidden: 'Возраст скрыт', ageShown: 'Возраст виден', expires: 'Истекает:', sendMessage: 'Сообщение', unlockPreference: 'Изменить профиль', iGotStuff: 'У меня есть стафф', unlockPreferencePrompt: 'Изменить профиль за 1000 Stars?', invisiblePrompt: 'Невидимка за 3000 Stars?', hideAgePrompt: 'Скрыть возраст за 1000 Stars?', filterSubPrompt: 'Требуется подписка на фильтры.', paymentCancelled: 'Оплата отменена.', errorSaving: 'Ошибка:', fillAll: 'Заполните все поля.',
+    'Versatile': 'Универсал (Vers)', 'Top': 'Актив (Top)', 'Bottom': 'Пассив (Btm)', 'Side': 'Без пенетрации (Side)', 'VT': 'Универсал/Актив (VT)', 'VB': 'Универсал/Пассив (VB)',
+    'Safe': 'С резинкой (Safe)', 'Raw': 'Без резинки (Raw)',
+    'Clean': 'Без наркотиков (Clean)', 'Party': 'Химсекс (Party)', 'Party✓': 'Party✓',
+    '1on1_setup': '1 на 1 (только)', 'group_setup': 'группа (только)', 'DoesntMatter_setup': 'Неважно',
+    '1on1': '1 на 1', 'group': 'группа', 'DoesntMatter': 'Неважно',
+    'Host': 'Принимаю (Host)', 'Travel': 'Приеду (Travel)', 'Off': 'Выкл', 'Anywhere': 'Везде', 'Role': 'Роль', 'Safety': 'Безопасность', 'Playstyle': 'Стиль', 'How Many': 'Сколько', 'Where': 'Где',
+    you: 'Вы', away: 'от вас', online: 'Онлайн', offline: 'Офлайн',
+    mAgo: '{n} мин назад', hAgo: '{n} ч назад', dAgo: '{n} дн назад',
+    m2m: 'М+М (M2M)', admin: 'Админ', unsubscribed: 'Без подписки',
+    subscribedUntil: 'Подписка до {d}', expired: 'Истекла',
+    privateNote: 'Личная заметка', notePlaceholder: 'Личная заметка (макс. 100 симв.)',
+    forceReset: 'Принуд. сброс', gamesApps: 'Игры и приложения',
+    selectedUser: 'Выбран пользователь: {n}', profileReset: 'Профиль сброшен.', resetFailed: 'Ошибка сброса.',
+    forceResetConfirm: 'Сбросить профиль {n}?',
+    vip: 'VIP', vipUnlimited: 'VIP · ∞', adminMenu: 'Меню админа', adminVipList: 'Список админ / VIP', owner: 'Владелец', addRole: 'Добавить', removeRole: 'Удалить', roleUsernamePlaceholder: 'имя пользователя (без @)', roleUpdateFailed: 'Ошибка обновления.', ownerImmutable: 'Роль владельца изменить нельзя.', noRolesYet: 'Пока нет админов или VIP.', close: 'Закрыть', grantVipAll: 'Выдать VIP всем', revokeVipAll: 'Отозвать VIP у всех', forceResetAll: 'Сбросить всех пользователей', forceResetAllConfirm: 'Сбросить ВСЕХ пользователей? При следующем входе все увидят экран «заполните профиль».', resetAllDone: 'Все пользователи сброшены.', period_1w: '1 неделя', period_1mo: '1 месяц', period_3mo: '3 месяца', period_6mo: '6 месяцев', period_1y: '1 год'
+  }
+};
+
+export interface UserProfile {
+  id: string;
+  name: string;
+  username?: string;
+  avatar: string;
+  lat: number | null;
+  lng: number | null;
+  last_seen: string | null;
+  gender?: string | null;
+  seeking?: string | null;
+  dob?: string | null;
+  age?: number | null;
+  zodiac?: string;
+  height?: string | null;
+  weight?: string | null;
+  role_pref?: string | null;
+  safety_pref?: string | null;
+  playstyle_pref?: string | null;
+  where_pref?: string | null;
+  how_many_pref?: string | null;
+  non_man_mode?: string | null;
+  is_underage?: boolean;
+  hide_age?: boolean;
+  grid_visible?: boolean;
+  map_visible?: boolean;
+  distance?: number;
+  hide_age_expiry?: string | null;
+  invisible_expiry?: string | null;
+  filter_sub_expiry?: string | null;
+  vip_expiry?: string | null;
+}
+
+const formatDistanceBigUnit = (meters?: number) => {
+  if (meters === undefined || meters === null) return '0m';
+  if (meters >= 1000) {
+    return `${(meters / 1000).toFixed(1)}km`;
+  }
+  return `${meters}m`;
+};
+
+const formatTagText = (str: string) => {
+  if (!str) return '';
+  return str.replace(/\s*[(（][^)）]*[)）]/g, '').trim();
+};
+
+// Tag-match helpers: when viewing another user's card, a tag lights up only if
+// it matches the viewer's own preference filter. Versatile matches all roles
+// except Side; "Doesn't matter"/Anywhere (or Off/null) matches everything.
+const tagMatchesRole = (filterVal: string | null, userRole: string | null) => {
+  if (!filterVal || filterVal === 'Off') return true;
+  if (filterVal === 'Versatile') return userRole !== 'Side';
+  if (filterVal === 'VT') return userRole === 'Versatile' || userRole === 'Top';
+  if (filterVal === 'VB') return userRole === 'Versatile' || userRole === 'Bottom';
+  return filterVal === userRole;
+};
+const tagMatchesSafety = (filterVal: string | null, userPref: string | null) => {
+  if (!filterVal || filterVal === 'Off') return true;
+  return filterVal === userPref;
+};
+const tagMatchesPlaystyle = (filterVal: string | null, userPref: string | null) => {
+  if (!filterVal || filterVal === 'Off') return true;
+  if (filterVal === 'Party') return userPref === 'Party' || userPref === 'Party✓';
+  return filterVal === userPref;
+};
+const tagMatchesHowMany = (filterVal: string | null, userPref: string | null) => {
+  if (!filterVal || filterVal === 'Off' || filterVal === 'DoesntMatter') return true;
+  return filterVal === userPref;
+};
+const tagMatchesWhere = (filterVal: string | null, userWhere: string | null) => {
+  if (!filterVal || filterVal === 'Off') return true;
+  return filterVal === userWhere;
+};
+
+const calculateAge = (dobString?: string | null) => {
+  if (!dobString) return null;
+  try {
+    const birthDate = new Date(dobString);
+    const today = new Date();
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const m = today.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+      age--;
+    }
+    return age;
+  } catch {
+    return null;
+  }
+};
+
+const parseHeightMeters = (height?: string | null): number | null => {
+  if (!height) return null;
+  const m = String(height).match(/(\d+(?:\.\d+)?)\s*m/i);
+  if (m) {
+    const v = parseFloat(m[1]);
+    return v >= 0.5 && v <= 3 ? v : null;
+  }
+  const cm = String(height).match(/(\d+(?:\.\d+)?)\s*cm/i);
+  if (cm) {
+    const v = parseFloat(cm[1]);
+    return v >= 50 && v <= 300 ? v / 100 : null;
+  }
+  return null;
+};
+
+const getZodiacSignEmoji = (dobString?: string | null) => {
+  if (!dobString) return '';
+  try {
+    const date = new Date(dobString);
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    if ((month === 3 && day >= 21) || (month === 4 && day <= 19)) return '♈';
+    if ((month === 4 && day >= 20) || (month === 5 && day <= 20)) return '♉';
+    if ((month === 5 && day >= 21) || (month === 6 && day <= 20)) return '♊';
+    if ((month === 6 && day >= 21) || (month === 7 && day <= 22)) return '♋';
+    if ((month === 7 && day >= 23) || (month === 8 && day <= 22)) return '♌';
+    if ((month === 8 && day >= 23) || (month === 9 && day <= 22)) return '♍';
+    if ((month === 9 && day >= 23) || (month === 10 && day <= 22)) return '♎';
+    if ((month === 10 && day >= 23) || (month === 11 && day <= 21)) return '♏';
+    if ((month === 11 && day >= 22) || (month === 12 && day <= 21)) return '♐';
+    if ((month === 12 && day >= 22) || (month === 1 && day <= 19)) return '♑';
+    if ((month === 1 && day >= 20) || (month === 2 && day <= 18)) return '♒';
+    return '♓';
+  } catch {
+    return '';
+  }
+};
+
+const formatLastSeenBigUnit = (isoString?: string | null) => {
+  if (!isoString) return 'offline';
+  try {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'online';
+    if (diffMins < 60) return `mAgo:${diffMins}`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `hAgo:${diffHours}`;
+    return `dAgo:${Math.floor(diffHours / 24)}`;
+  } catch {
+    return 'offline';
+  }
+};
+
+// Render a formatLastSeenBigUnit token with the current language
+const renderLastSeenBigUnit = (token: string, t: (key: string) => string) => {
+  if (token.startsWith('mAgo:')) return t('mAgo').replace('{n}', token.slice(5));
+  if (token.startsWith('hAgo:')) return t('hAgo').replace('{n}', token.slice(5));
+  if (token.startsWith('dAgo:')) return t('dAgo').replace('{n}', token.slice(5));
+  return t(token);
+};
+
+const isOnlineWithin15Min = (isoString?: string | null) => {
+  if (!isoString) return false;
+  try {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = diffMs / 60000;
+    return diffMins <= 15 && diffMins >= 0;
+  } catch {
+    return false;
+  }
+};
+
+const flyingMessageLane = (id: string) => {
+  let hash = 0;
+  for (let index = 0; index < id.length; index++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(index)) | 0;
+  }
+  return 8 + (Math.abs(hash) % 82);
+};
+
+const getNextRaffleCloseAt = (now: number) => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(now));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const year = Number(values.year);
+  const month = Number(values.month);
+  const day = Number(values.day);
+  const hour = Number(values.hour);
+  const isBeforeThisMonthDraw = day === 1 && hour < 20;
+  const targetMonthIndex = month - 1 + (isBeforeThisMonthDraw ? 0 : 1);
+  // Hong Kong is UTC+8 year-round, so 20:00 local is 12:00 UTC.
+  return Date.UTC(year, targetMonthIndex, 1, 12, 0, 0);
+};
+
+const formatRaffleCountdown = (deadline: number, now: number, lang: LangKey) => {
+  const remainingSeconds = Math.max(0, Math.floor((deadline - now) / 1000));
+  const days = Math.floor(remainingSeconds / 86_400);
+  const hours = Math.floor((remainingSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((remainingSeconds % 3_600) / 60);
+  const seconds = remainingSeconds % 60;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return raffleUiCopy[lang].countdown
+    .replace('{d}', String(days))
+    .replace('{h}', pad(hours))
+    .replace('{m}', pad(minutes))
+    .replace('{s}', pad(seconds));
+};
+
+export default function App() {
+  const verifiedBotKeyRef = useRef<'botA' | 'botB' | null>(null);
+  const [lang, setLang] = useState<LangKey>('en');
+  const t = (key: string) => translations[lang]?.[key] || translations['en'][key] || key;
+  const [view, setView] = useState<'grid' | 'map'>('grid');
+  const [hasOpenedMap, setHasOpenedMap] = useState(false);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const raffleUserId = currentUser?.id;
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [location, setLocation] = useState<{ lat: number; lng: number }>({ lat: 22.3193, lng: 114.1694 });
+  const [isReady, setIsReady] = useState<boolean>(false);
+  const [startupError, setStartupError] = useState<string>('');
+  const [showProfileSetup, setShowProfileSetup] = useState<boolean>(false);
+  const [isUnderageLocked, setIsUnderageLocked] = useState<boolean>(false);
+  const [isLocationDenied, setIsLocationDenied] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [isVip, setIsVip] = useState<boolean>(false);
+  const [vipExpiry, setVipExpiry] = useState<string | null>(null);
+  const [raffleClock, setRaffleClock] = useState<number>(Date.now());
+  const [raffleServerOffset, setRaffleServerOffset] = useState<number>(0);
+  const temporaryVipActive = Boolean(vipExpiry && Date.parse(vipExpiry) > raffleClock);
+  // Global VIP: while this timestamp is in the future, EVERY user gets all paid
+  // functions unlocked (an admin-granted, time-boxed VIP for everyone).
+  const [globalVipUntil, setGlobalVipUntil] = useState<number>(0);
+  const globalVipActive = globalVipUntil > Date.now();
+  // VIP (personal or global) unlocks every paid function, just like admin.
+  const paidUnlocked = isAdmin || isVip || temporaryVipActive || globalVipActive;
+  const [roles, setRoles] = useState<{ username: string; role: string }[]>([]);
+  const [rolesLoading, setRolesLoading] = useState(false);
+  const [rolesLoadError, setRolesLoadError] = useState('');
+  const [showAdminMenu, setShowAdminMenu] = useState<boolean>(false);
+  const [showRolesModal, setShowRolesModal] = useState<boolean>(false);
+  const [showVipPeriods, setShowVipPeriods] = useState<boolean>(false);
+  const [showFlyingPriceEditor, setShowFlyingPriceEditor] = useState<boolean>(false);
+  const [flyingPriceDraft, setFlyingPriceDraft] = useState<string>('0');
+  const [savingFlyingPrice, setSavingFlyingPrice] = useState<boolean>(false);
+  const [flyingMessagePrice, setFlyingMessagePrice] = useState<number>(0);
+  const effectiveFlyingMessagePrice = paidUnlocked ? 0 : flyingMessagePrice;
+  const [flyingMessageText, setFlyingMessageText] = useState<string>('');
+  const [flyingMessages, setFlyingMessages] = useState<FlyingMessage[]>([]);
+  const [raffleState, setRaffleState] = useState<RaffleState | null>(null);
+  const [rafflePurchasing, setRafflePurchasing] = useState<boolean>(false);
+  const [raffleNotice, setRaffleNotice] = useState<string>('');
+  const raffleAnnouncementRoundRef = useRef<string | null>(null);
+  const raffleAnnouncementOwnerRef = useRef<string | null>(null);
+  const pendingRafflePurchaseRef = useRef<{ previousCount: number; expiresAt: number } | null>(null);
+  const applyRaffleStateRef = useRef<((value: RaffleState) => void) | null>(null);
+  const refreshRaffleStateRef = useRef<(() => Promise<RaffleState>) | null>(null);
+  const [flyingMessageNotice, setFlyingMessageNotice] = useState<string>('');
+  const [sendingFlyingMessage, setSendingFlyingMessage] = useState<boolean>(false);
+  const [flyingCooldownUntil, setFlyingCooldownUntil] = useState<number>(0);
+  const [cooldownClock, setCooldownClock] = useState<number>(Date.now());
+  const [newRoleUsername, setNewRoleUsername] = useState<string>('');
+  const [newRole, setNewRole] = useState<'admin' | 'vip'>('vip');
+  const [showStuffBubble, setShowStuffBubble] = useState<boolean>(false);
+  const [hasFilterSub, setHasFilterSub] = useState<boolean>(false);
+  const [filterSubUntil, setFilterSubUntil] = useState<number>(0);
+  const filterSubUntilRef = useRef<number>(0);
+  useEffect(() => { filterSubUntilRef.current = filterSubUntil; }, [filterSubUntil]);
+  const wallet = useTonWallet();
+  const [tonConnectUI] = useTonConnectUI();
+  const isWalletConnected = !!wallet;
+
+  const handleWalletClick = async () => {
+    if (isWalletConnected) {
+      try { await tonConnectUI.disconnect(); } catch (err) { console.error('Wallet disconnect error:', err); }
+      return;
+    }
+    try { await tonConnectUI.openSingleWalletModal('telegram-wallet'); } catch (err) { console.error('Wallet connect error:', err); }
+  };
+
+  const [showFilterDropdown, setShowFilterDropdown] = useState<boolean>(false);
+  const [filterAgeOn, setFilterAgeOn] = useState<boolean>(false);
+  const [filterAgeMin, setFilterAgeMin] = useState<number>(18);
+  const [filterAgeMax, setFilterAgeMax] = useState<number>(60);
+  const [filterHeightOn, setFilterHeightOn] = useState<boolean>(false);
+  const [filterHeightMin, setFilterHeightMin] = useState<number>(140);
+  const [filterHeightMax, setFilterHeightMax] = useState<number>(200);
+  const [filterPrefMatcherOn, setFilterPrefMatcherOn] = useState<boolean>(true);
+  const [selectedProfile, setSelectedProfile] = useState<UserProfile | null>(null);
+  const [noteDraft, setNoteDraft] = useState<string>('');
+  const [showNoteBox, setShowNoteBox] = useState<boolean>(false);
+  const [notesMap, setNotesMap] = useState<Record<string, string>>({});
+  const [showProfileEditModal, setShowProfileEditModal] = useState<boolean>(false);
+  const [isGamesMenuOpen, setIsGamesMenuOpen] = useState<boolean>(false);
+  const [entryId, setEntryId] = useState<AppEntryId>(() =>
+    resolveAppEntry(
+      window.Telegram?.WebApp?.initDataUnsafe?.start_param,
+      window.location.search,
+    ).id,
+  );
+  const entry = APP_ENTRIES[entryId];
+  const [dob, setDob] = useState<string>('');
+  const [gender, setGender] = useState<string>('man');
+  const [seeking, setSeeking] = useState<string>('women');
+  const [height, setHeight] = useState<string>('');
+  const [weight, setWeight] = useState<string>('');
+  const [rolePref, setRolePref] = useState<string>('Versatile');
+  const [safetyPref, setSafetyPref] = useState<string>('Safe');
+  const [playstylePref, setPlaystylePref] = useState<string>('Clean');
+  const [howManyPref, setHowManyPref] = useState<string>('DoesntMatter');
+  const [wherePref, setWherePref] = useState<string | null>(null);
+  const [nonManMode, setNonManMode] = useState<string>('Meet up - You are visible on grid and map');
+  const [hideAge, setHideAge] = useState<boolean>(false);
+  const [hideAgeExpiry, setHideAgeExpiry] = useState<string | null>(null);
+  const [invisibleExpiry, setInvisibleExpiry] = useState<string | null>(null);
+  const [gridVisible, setGridVisible] = useState<boolean>(true);
+  const [mapVisible, setMapVisible] = useState<boolean>(false);
+  const [filterRoleVal, setFilterRoleVal] = useState<string | null>(null);
+  const [filterSafetyVal, setFilterSafetyVal] = useState<string | null>(null);
+  const [filterPlaystyleVal, setFilterPlaystyleVal] = useState<string | null>(null);
+  const [filterHowManyVal, setFilterHowManyVal] = useState<string | null>(null);
+  const [filterWhereVal, setFilterWhereVal] = useState<string | null>(null);
+
+  const roleCycleOptions = ['Versatile', 'Top', 'Bottom', 'Side'];
+  const safetyCycleOptions = ['Safe', 'Raw'];
+  const howManyCycleOptions = ['1on1', 'DoesntMatter'];
+  const whereCycleOptions = ['Host', 'Travel', null];
+  const filterRoleCycleOptions = ['Top', 'VT', 'Versatile', 'VB', 'Bottom', 'Side', 'Off'];
+  const filterSafetyCycleOptions = ['Safe', 'Raw', 'Off'];
+  const filterPlaystyleCycleOptions = ['Clean', 'Party', 'Off'];
+  const filterHowManyCycleOptions = ['1on1', 'DoesntMatter', 'Off'];
+  const filterWhereCycleOptions = ['Host', 'Travel', 'Off'];
+
+  const cycleNext = (current: string, options: string[]) => {
+    const idx = options.indexOf(current);
+    if (idx === -1 || idx === options.length - 1) return options[0];
+    return options[idx + 1];
+  };
+  const cycleWhere = (current: string | null, options: (string | null)[]) => {
+    const idx = options.indexOf(current);
+    if (idx === -1 || idx === options.length - 1) return options[0];
+    return options[idx + 1];
+  };
+
+  const heightOptions = [];
+  for (let cm = 100; cm <= 300; cm += 5) {
+    const totalInches = Math.round(cm / 2.54);
+    const ft = Math.floor(totalInches / 12);
+    const inch = totalInches % 12;
+    heightOptions.push(`${cm}cm (${ft}ft ${inch}in)`);
+  }
+  const weightOptions = [];
+  for (let kg = 35; kg <= 160; kg += 1) {
+    const lbs = Math.round(kg * 2.20462);
+    weightOptions.push(`${kg}kg (${lbs}lbs)`);
+  }
+
+  const getActiveBotKey = () => {
+    if (verifiedBotKeyRef.current) return verifiedBotKeyRef.current;
+    const startParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
+    return resolveAppEntry(startParam, window.location.search).botKey;
+  };
+
+  const workerPost = async (path: string, body: Record<string, unknown> = {}) => {
+    const initData = window.Telegram?.WebApp?.initData || '';
+    if (!initData) throw new Error('Open Who’s Nearby from Telegram to continue.');
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      WORKER_REQUEST_TIMEOUT_MS,
+    );
+    try {
+      const response = await fetch(`${PAYMENT_WORKER_URL}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, initData, bot: getActiveBotKey() }),
+        signal: controller.signal,
+      });
+      let result: any = {};
+      try { result = await response.json(); } catch {}
+      if (!response.ok) {
+        const error = new Error(result.error || `Request failed (${response.status})`) as Error & {
+          retryAfter?: number;
+          status?: number;
+          upstreamStatus?: number;
+        };
+        error.status = response.status;
+        const upstreamStatus = Number(result.upstreamStatus);
+        if (Number.isInteger(upstreamStatus) && upstreamStatus >= 400) error.upstreamStatus = upstreamStatus;
+        const retryAfter = Number(result.retryAfter || response.headers.get('retry-after'));
+        if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter;
+        throw error;
+      }
+      return result;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error('The server took too long to respond. Check your connection and try again.');
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
+
+  const formatAdminFailure = (error: unknown, fallback: string) => {
+    if (!(error instanceof Error)) return fallback;
+    const details = error as Error & { status?: number; upstreamStatus?: number };
+    const parts = [
+      details.status ? `HTTP ${details.status}` : '',
+      details.upstreamStatus ? `database ${details.upstreamStatus}` : '',
+      error.message,
+    ].filter(Boolean);
+    return parts.length ? `${fallback} (${parts.join(' · ')})` : fallback;
+  };
+
+  const mergeFlyingMessages = (incoming: FlyingMessage[]) => {
+    const cutoff = Date.now() - 10_000;
+    setFlyingMessages((current) => {
+      const combined = new Map<string, FlyingMessage>();
+      for (const message of current) {
+        if (Date.parse(message.created_at) >= cutoff) combined.set(message.id, message);
+      }
+      for (const message of incoming) {
+        if (
+          message &&
+          typeof message.id === 'string' &&
+          typeof message.text === 'string' &&
+          typeof message.created_at === 'string' &&
+          Date.parse(message.created_at) >= cutoff
+        ) {
+          combined.set(message.id, message);
+        }
+      }
+      return [...combined.values()].slice(-24);
+    });
+  };
+
+  const applyRaffleState = (value: RaffleState) => {
+    if (!value || typeof value !== 'object') return;
+    setRaffleState(value);
+    const serverNow = Date.parse(value.serverNow);
+    if (Number.isFinite(serverNow)) {
+      const offset = serverNow - Date.now();
+      setRaffleServerOffset(offset);
+      setRaffleClock(Date.now() + offset);
+    }
+
+    const pendingPurchase = pendingRafflePurchaseRef.current;
+    if (pendingPurchase && Date.now() > pendingPurchase.expiresAt) {
+      pendingRafflePurchaseRef.current = null;
+    } else if (pendingPurchase && value.userTicketCount > pendingPurchase.previousCount) {
+      pendingRafflePurchaseRef.current = null;
+      setRaffleNotice(raffleUiCopy[lang].ticketPurchased);
+    }
+
+    const draw = value.latestDraw;
+    if (!draw?.roundKey || raffleAnnouncementRoundRef.current === draw.roundKey) return;
+    raffleAnnouncementRoundRef.current = draw.roundKey;
+    const copy = raffleUiCopy[lang];
+    const prizeTitles = copy.prizes;
+    const winners = Array.isArray(draw.winners) ? draw.winners : [];
+    const messages = winners
+      .filter((winner) => winner.username && prizeTitles[winner.prizeKey])
+      .map((winner) => ({
+        id: `raffle:${draw.roundKey}:${winner.prizeKey}`,
+        tg_id: 'raffle',
+        from_name: copy.announcement,
+        text: copy.winnerMessage
+          .replace('{prize}', prizeTitles[winner.prizeKey])
+          .replace('{username}', winner.username),
+        created_at: new Date().toISOString(),
+        audience_bot: getActiveBotKey(),
+      }));
+    if (messages.length) mergeFlyingMessages(messages);
+
+    for (const winner of winners) {
+      if (!winner.isYou || !winner.expiresAt) continue;
+      const expiry = winner.expiresAt;
+      if (winner.prizeKey === 'vip') {
+        setVipExpiry(expiry);
+        setCurrentUser((previous) => previous ? { ...previous, vip_expiry: expiry } : previous);
+      } else if (winner.prizeKey === 'filter') {
+        const until = Date.parse(expiry);
+        if (Number.isFinite(until)) {
+          setFilterSubUntil(until);
+          filterSubUntilRef.current = until;
+          setHasFilterSub(true);
+        }
+      } else if (winner.prizeKey === 'invisible') {
+        setInvisibleExpiry(expiry);
+        setGridVisible(false);
+        setMapVisible(false);
+        setCurrentUser((previous) => previous
+          ? { ...previous, grid_visible: false, map_visible: false, invisible_expiry: expiry }
+          : previous);
+      } else if (winner.prizeKey === 'hide_age') {
+        setHideAge(true);
+        setHideAgeExpiry(expiry);
+        setCurrentUser((previous) => previous
+          ? { ...previous, hide_age: true, hide_age_expiry: expiry }
+          : previous);
+      }
+    }
+  };
+
+  const refreshRaffleState = async () => {
+    const value = await workerPost('/api/raffle/state');
+    applyRaffleState(value as RaffleState);
+    return value as RaffleState;
+  };
+  applyRaffleStateRef.current = applyRaffleState;
+  refreshRaffleStateRef.current = refreshRaffleState;
+
+  useEffect(() => {
+    if (!isReady || !raffleUserId) return;
+    let active = true;
+    let polling = false;
+    const pollMessages = async () => {
+      if (!active || polling) return;
+      polling = true;
+      try {
+        const feed = await workerPost('/api/messages/feed');
+        if (!active) return;
+        if (Number.isSafeInteger(feed.starsPrice) && feed.starsPrice >= 0) {
+          setFlyingMessagePrice(feed.starsPrice);
+        }
+        if (Array.isArray(feed.messages)) mergeFlyingMessages(feed.messages as FlyingMessage[]);
+      } catch {
+        // Keep the last animation state; the next poll retries automatically.
+      } finally {
+        polling = false;
+      }
+    };
+    void pollMessages();
+    const timer = window.setInterval(() => void pollMessages(), 2000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [isReady, raffleUserId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setRaffleClock(Date.now() + raffleServerOffset);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [raffleServerOffset]);
+
+  useEffect(() => {
+    if (!isReady || !raffleUserId) return;
+    if (raffleAnnouncementOwnerRef.current !== raffleUserId) {
+      raffleAnnouncementOwnerRef.current = raffleUserId;
+      raffleAnnouncementRoundRef.current = null;
+      pendingRafflePurchaseRef.current = null;
+    }
+    let active = true;
+    let polling = false;
+    const pollRaffle = async () => {
+      if (!active || polling) return;
+      polling = true;
+      try {
+        const value = await workerPost('/api/raffle/state');
+        if (active) applyRaffleStateRef.current?.(value as RaffleState);
+      } catch {
+        // The countdown has a local Hong Kong-time fallback; retry on the next interval.
+      } finally {
+        polling = false;
+      }
+    };
+    void pollRaffle();
+    const timer = window.setInterval(() => void pollRaffle(), 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [isReady, raffleUserId]);
+
+  useEffect(() => {
+    if (!isReady || !raffleUserId || !raffleState?.closesAt) return;
+    const deadline = Date.parse(raffleState.closesAt);
+    if (!Number.isFinite(deadline)) return;
+    const delay = Math.max(0, deadline - (Date.now() + raffleServerOffset) + 1000);
+    const timer = window.setTimeout(() => {
+      void refreshRaffleStateRef.current?.().catch(() => {});
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [isReady, raffleUserId, raffleState?.closesAt, raffleServerOffset]);
+
+  useEffect(() => {
+    if (!flyingCooldownUntil) return;
+    setCooldownClock(Date.now());
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setCooldownClock(now);
+      if (now >= flyingCooldownUntil) window.clearInterval(timer);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [flyingCooldownUntil]);
+
+  useEffect(() => {
+    if (!flyingMessageNotice) return;
+    const timer = window.setTimeout(() => setFlyingMessageNotice(''), 6000);
+    return () => window.clearTimeout(timer);
+  }, [flyingMessageNotice]);
+
+  useEffect(() => {
+    if (!raffleNotice) return;
+    const timer = window.setTimeout(() => setRaffleNotice(''), 6000);
+    return () => window.clearTimeout(timer);
+  }, [raffleNotice]);
+
+  const applyDefaultFiltersFromPreferences = (pRole: string, pSafety: string, pPlaystyle: string, pHowMany: string) => {
+    if (pRole === 'Top') setFilterRoleVal('Bottom');
+    else if (pRole === 'Bottom') setFilterRoleVal('Top');
+    else if (pRole === 'Side') setFilterRoleVal('Side');
+    else setFilterRoleVal(null);
+    setFilterSafetyVal(pSafety);
+    if (pHowMany === '1on1') setFilterHowManyVal('1on1');
+    else setFilterHowManyVal(null);
+    if (pPlaystyle === 'Party' || pPlaystyle === 'Party✓') setFilterPlaystyleVal('Party');
+    else setFilterPlaystyleVal('Clean');
+  };
+
+  const fetchUsersData = async () => {
+    try {
+      const data = await workerPost('/api/nearby');
+      if (!Array.isArray(data)) throw new Error('Nearby search returned invalid data.');
+      const processed: UserProfile[] = data.map((u: any) => ({
+        id: u.id || 'unknown',
+        name: u.name || (u.username ? '@' + u.username : 'Anonymous'),
+        username: u.username || '',
+        avatar: u.avatar || '',
+        lat: typeof u.lat === 'number' ? u.lat : null,
+        lng: typeof u.lng === 'number' ? u.lng : null,
+        last_seen: u.last_seen || null,
+        gender: u.gender || null,
+        seeking: u.seeking || null,
+        age: typeof u.age === 'number' ? u.age : null,
+        zodiac: u.zodiac || '',
+        height: u.height || null,
+        weight: u.weight || null,
+        role_pref: u.role_pref || null,
+        safety_pref: u.safety_pref || null,
+        playstyle_pref: u.playstyle_pref || null,
+        where_pref: u.where_pref || null,
+        how_many_pref: u.how_many_pref || null,
+        non_man_mode: u.non_man_mode || null,
+        hide_age: u.hide_age || false,
+        grid_visible: u.grid_visible ?? true,
+        map_visible: u.map_visible ?? false,
+        distance: typeof u.distance === 'number' ? u.distance : undefined,
+      })).sort((a, b) => {
+        if (a.id === currentUser?.id) return -1;
+        if (b.id === currentUser?.id) return 1;
+        return (a.distance || 0) - (b.distance || 0);
+      });
+      setUsers(processed);
+    } catch (error) {
+      console.error('Error fetching nearby users:', error);
+    }
+  };
+
+  useEffect(() => {
+    const initApp = async () => {
+      try {
+        if (window.Telegram?.WebApp) {
+          window.Telegram.WebApp.ready?.();
+          window.Telegram.WebApp.expand?.();
+        }
+        let tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+        let startParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param ||
+          (resolveAppEntry(null, window.location.search).id === 'hkmo-date' ? 'gaymode' : '');
+        if (!tgUser) {
+          await new Promise((res) => setTimeout(res, 300));
+          tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+          startParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param || startParam ||
+            (resolveAppEntry(null, window.location.search).id === 'hkmo-date' ? 'gaymode' : '');
+        }
+        const activeEntry = resolveAppEntry(startParam, window.location.search);
+        setEntryId(activeEntry.id);
+        const tgLangCode = (tgUser?.language_code || navigator.language || 'en').toLowerCase();
+        if (tgLangCode.startsWith('zh')) {
+          setLang(tgLangCode.includes('tw') || tgLangCode.includes('hk') || tgLangCode.includes('hant') ? 'zh-TW' : 'zh-CN');
+        } else if (tgLangCode.startsWith('ja')) { setLang('ja'); }
+        else if (tgLangCode.startsWith('ko')) { setLang('ko'); }
+        else if (tgLangCode.startsWith('ru')) { setLang('ru'); }
+        else { setLang('en'); }
+        if (!window.Telegram?.WebApp?.initData) throw new Error('Open Who’s Nearby from Telegram to continue.');
+        const authResponse = await workerPost('/api/auth');
+        if (authResponse.bot === 'botA' || authResponse.bot === 'botB') {
+          verifiedBotKeyRef.current = authResponse.bot;
+        }
+        const existingProfile: any = authResponse.profile;
+        if (!existingProfile?.id) throw new Error('Your profile could not be loaded.');
+        const userUsername = existingProfile.username || tgUser?.username || '';
+        // Fetch the managed role list only when an admin opens its manager.
+        setRoles([]);
+        // The Worker reads this server-side so no Supabase credential is sent to the browser.
+        const globalVipUntil = Number(authResponse.globalVipUntil);
+        if (Number.isFinite(globalVipUntil)) setGlobalVipUntil(globalVipUntil);
+        setIsAdmin(authResponse.role === 'admin');
+        setIsVip(authResponse.role === 'vip');
+        const userId = existingProfile.id;
+        localStorage.setItem('whos_nearby_user_id', userId);
+        const userName = existingProfile.name || tgUser?.first_name || 'Anonymous';
+        const userAvatar = existingProfile.avatar || '';
+        if (existingProfile.is_underage) { setIsUnderageLocked(true); setIsReady(true); return; }
+        if (!navigator.geolocation) { setIsLocationDenied(true); setIsReady(true); return; }
+        // Don't keep Telegram on the loading screen while waiting on a slow GPS lock.
+        // Prefer a recent cached fix; otherwise continue with the saved profile location.
+        let fix: { lat: number; lng: number } | null = null;
+        const tryGeolocation = (opts: PositionOptions): Promise<boolean> =>
+          new Promise((resolve) => {
+            let settled = false;
+            const finish = (success: boolean) => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(fallbackTimer);
+              resolve(success);
+            };
+            // Some Telegram WebViews do not start the browser's geolocation
+            // timeout until the user dismisses the permission prompt.
+            const fallbackTimer = window.setTimeout(() => finish(false), 4_500);
+            try {
+              navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                  fix = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                  setLocation(fix);
+                  finish(true);
+                },
+                () => finish(false),
+                opts,
+              );
+            } catch {
+              finish(false);
+            }
+          });
+        await tryGeolocation({ enableHighAccuracy: false, timeout: 4000, maximumAge: 600000 });
+        let initialGender = existingProfile?.gender || activeEntry.profileSetup.defaultGender;
+        let initialSeeking = existingProfile?.seeking || activeEntry.profileSetup.defaultSeeking;
+        setGender(initialGender); setSeeking(initialSeeking);
+        const isManSeekingMan = initialGender === 'man' && initialSeeking === 'men';
+        const isFullySetup = Boolean(
+          existingProfile && existingProfile.dob && existingProfile.gender &&
+          existingProfile.seeking && existingProfile.height && existingProfile.weight &&
+          (!isManSeekingMan || (existingProfile.role_pref && existingProfile.safety_pref && existingProfile.playstyle_pref && existingProfile.how_many_pref && existingProfile.where_pref !== undefined)) &&
+          (isManSeekingMan || existingProfile.non_man_mode)
+        );
+        let initialGridVisible = true;
+        if (existingProfile) {
+          setVipExpiry(existingProfile.vip_expiry || null);
+          if (existingProfile.dob) setDob(existingProfile.dob);
+          if (existingProfile.height) setHeight(existingProfile.height);
+          if (existingProfile.weight) setWeight(existingProfile.weight);
+          if (existingProfile.role_pref) setRolePref(existingProfile.role_pref);
+          if (existingProfile.safety_pref) setSafetyPref(existingProfile.safety_pref);
+          if (existingProfile.playstyle_pref) setPlaystylePref(existingProfile.playstyle_pref);
+          if (existingProfile.how_many_pref) setHowManyPref(existingProfile.how_many_pref);
+          if (existingProfile.where_pref !== undefined && existingProfile.where_pref !== null) setWherePref(existingProfile.where_pref);
+          if (existingProfile.non_man_mode) setNonManMode(existingProfile.non_man_mode);
+          if (typeof existingProfile.hide_age === 'boolean') setHideAge(existingProfile.hide_age);
+          if (existingProfile.hide_age_expiry) setHideAgeExpiry(existingProfile.hide_age_expiry);
+          if (existingProfile.invisible_expiry) setInvisibleExpiry(existingProfile.invisible_expiry);
+          if (existingProfile.filter_sub_expiry) {
+            const ts = new Date(existingProfile.filter_sub_expiry).getTime();
+            if (Number.isFinite(ts) && ts > Date.now()) {
+              setFilterSubUntil(ts);
+              filterSubUntilRef.current = ts;
+              setHasFilterSub(true);
+            }
+          }
+          if (typeof existingProfile.grid_visible === 'boolean') { initialGridVisible = existingProfile.grid_visible; setGridVisible(initialGridVisible); }
+          if (typeof existingProfile.map_visible === 'boolean') setMapVisible(existingProfile.map_visible);
+          if (isManSeekingMan) {
+            applyDefaultFiltersFromPreferences(
+              existingProfile.role_pref || 'Versatile', existingProfile.safety_pref || 'Safe',
+              existingProfile.playstyle_pref || 'Clean', existingProfile.how_many_pref || 'DoesntMatter'
+            );
+          }
+        }
+        // Use the real GPS fix (or, if geolocation failed entirely, fall back
+        // to the stored profile coords so we never overwrite them with the
+        // default HK centroid and force distances to ~0).
+        const currentLoc = fix ?? {
+          lat: typeof existingProfile?.lat === 'number' ? existingProfile.lat : 22.3193,
+          lng: typeof existingProfile?.lng === 'number' ? existingProfile.lng : 114.1694,
+        };
+        setLocation(currentLoc);
+        if (!isFullySetup) {
+          setShowProfileSetup(true);
+          setCurrentUser({ id: userId, name: userName, username: userUsername, avatar: userAvatar, lat: null, lng: null, last_seen: null, gender: initialGender, seeking: initialSeeking, dob: null, height: null, weight: null, role_pref: null, safety_pref: null, playstyle_pref: null, where_pref: null, how_many_pref: null, non_man_mode: null, is_underage: false, hide_age: false, grid_visible: true, map_visible: false, hide_age_expiry: null, invisible_expiry: null, vip_expiry: existingProfile?.vip_expiry || null });
+        } else {
+          const myProfile: UserProfile = { id: userId, name: userName, username: userUsername, avatar: userAvatar, lat: currentLoc.lat, lng: currentLoc.lng, last_seen: new Date().toISOString(), gender: initialGender, seeking: initialSeeking, dob: existingProfile.dob, height: existingProfile.height, weight: existingProfile.weight, role_pref: isManSeekingMan ? existingProfile.role_pref : null, safety_pref: isManSeekingMan ? existingProfile.safety_pref : null, playstyle_pref: isManSeekingMan ? existingProfile.playstyle_pref : null, where_pref: isManSeekingMan ? existingProfile.where_pref : null, how_many_pref: isManSeekingMan ? existingProfile.how_many_pref : null, non_man_mode: isManSeekingMan ? null : existingProfile.non_man_mode, is_underage: false, hide_age: existingProfile.hide_age || false, grid_visible: initialGridVisible, map_visible: existingProfile.map_visible ?? false, hide_age_expiry: existingProfile.hide_age_expiry || null, invisible_expiry: existingProfile.invisible_expiry || null, vip_expiry: existingProfile.vip_expiry || null };
+          setCurrentUser(myProfile);
+          void workerPost('/api/profile', { profile: { lat: currentLoc.lat, lng: currentLoc.lng } })
+            .then(({ profile: refreshedProfile }) => {
+              if (refreshedProfile && typeof refreshedProfile === 'object') {
+                setCurrentUser((previous) => previous?.id === userId
+                  ? { ...previous, ...refreshedProfile }
+                  : previous);
+              }
+            })
+            .catch((error) => console.warn('Could not refresh profile location:', error));
+          // The existing profile is enough to show the app. Nearby results
+          // and the saved location refresh can finish after the first render.
+          void fetchUsersData();
+           // Improve the location after the first screen is ready without delaying startup.
+           navigator.geolocation.getCurrentPosition(
+             (position) => {
+               const preciseLocation = {
+                 lat: position.coords.latitude,
+                 lng: position.coords.longitude,
+               };
+               void workerPost('/api/profile', { profile: preciseLocation })
+                 .then(() => {
+                   setLocation(preciseLocation);
+                   setCurrentUser((previous) => previous && previous.id === userId
+                     ? { ...previous, ...preciseLocation }
+                     : previous);
+                   return fetchUsersData();
+                 })
+                 .catch((error) => console.warn('Could not update precise location:', error));
+             },
+             () => {},
+             { enableHighAccuracy: true, timeout: 12000, maximumAge: 600000 }
+           );
+          loadFilterPrefs();
+        }
+      } catch (err) {
+        console.error('Initialization error:', err);
+        setStartupError(err instanceof Error ? err.message : 'Could not load your profile.');
+      }
+      finally { setIsReady(true); }
+    };
+    initApp();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount; deps are intentionally frozen at init
+  }, []);
+
+  const handleRefresh = async () => {
+    if (!currentUser) return;
+    const lastRefreshKey = `last_refresh_${currentUser.id}`;
+    const lastRefreshTime = Number(localStorage.getItem(lastRefreshKey) || 0);
+    const now = Date.now();
+    if (now - lastRefreshTime < 5 * 60 * 1000) return;
+    localStorage.setItem(lastRefreshKey, now.toString());
+    await fetchUsersData();
+  };
+
+  const handleToggleFilterDropdown = () => setShowFilterDropdown(!showFilterDropdown);
+
+  const handleToggleFilterItem = async (key: 'age' | 'height' | 'prefMatcher') => {
+    if (key === 'prefMatcher') {
+      const next = !filterPrefMatcherOn;
+      setFilterPrefMatcherOn(next);
+      persistFilterPrefs({ prefMatcherOn: next });
+      return;
+    }
+    if (!paidUnlocked && !(filterSubUntil > Date.now()) && !hasFilterSub) {
+      const ok = await verifyFilterSubscription();
+      if (!ok) return;
+    }
+    if (key === 'age') { const next = !filterAgeOn; setFilterAgeOn(next); persistFilterPrefs({ ageOn: next }); }
+    else if (key === 'height') { const next = !filterHeightOn; setFilterHeightOn(next); persistFilterPrefs({ heightOn: next }); }
+  };
+
+  const handleToggleFilterValue = async (key: 'role' | 'safety' | 'playstyle' | 'howMany' | 'where') => {
+    if (!paidUnlocked && !(filterSubUntil > Date.now()) && !hasFilterSub) {
+      const ok = await verifyFilterSubscription();
+      if (!ok) return;
+    }
+    const cycles: Record<string, string[]> = { role: filterRoleCycleOptions, safety: filterSafetyCycleOptions, playstyle: filterPlaystyleCycleOptions, howMany: filterHowManyCycleOptions, where: filterWhereCycleOptions };
+    const getVal = () => { if (key === 'role') return filterRoleVal; if (key === 'safety') return filterSafetyVal; if (key === 'playstyle') return filterPlaystyleVal; if (key === 'howMany') return filterHowManyVal; return filterWhereVal; };
+    const setVal = (v: string | null) => {
+      if (key === 'role') setFilterRoleVal(v); else if (key === 'safety') setFilterSafetyVal(v);
+      else if (key === 'playstyle') setFilterPlaystyleVal(v); else if (key === 'howMany') setFilterHowManyVal(v);
+      else setFilterWhereVal(v);
+      persistFilterPrefs({ roleVal: key === 'role' ? v : undefined, safetyVal: key === 'safety' ? v : undefined, playstyleVal: key === 'playstyle' ? v : undefined, howManyVal: key === 'howMany' ? v : undefined, whereVal: key === 'where' ? v : undefined } as any);
+    };
+    const options = cycles[key];
+    const current = getVal();
+    let next: string | null;
+    if (!current) { next = options[0]; }
+    else { const idx = options.indexOf(current); if (idx === -1 || idx === options.length - 1) next = null; else next = options[idx + 1]; }
+    setVal(next);
+  };
+
+  const handleAgeRangeChange = (min: number, max: number) => { setFilterAgeMin(min); setFilterAgeMax(max); persistFilterPrefs({ ageMin: min, ageMax: max }); };
+  const handleHeightRangeChange = (min: number, max: number) => { setFilterHeightMin(min); setFilterHeightMax(max); persistFilterPrefs({ heightMin: min, heightMax: max }); };
+
+  const handleSaveInitialProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+    const isManSeekingMan = gender === 'man' && seeking === 'men';
+    if (!dob || !gender || !seeking || !height || !weight || (isManSeekingMan && (!rolePref || !safetyPref || !playstylePref || !howManyPref || wherePref === undefined)) || (!isManSeekingMan && !nonManMode)) { setErrorMessage(t('fillAll')); return; }
+    const birthDate = new Date(dob);
+    const today = new Date();
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const m = today.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) age--;
+    if (age < 18) {
+      if (!currentUser) return;
+      try {
+        await workerPost('/api/profile', { profile: { dob } });
+        setIsUnderageLocked(true);
+      } catch (error) {
+        setErrorMessage(`${t('errorSaving')} ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
+    if (!currentUser) return;
+    try {
+      const result = await workerPost('/api/profile', {
+        profile: {
+          lat: location.lat,
+          lng: location.lng,
+          dob,
+          gender,
+          seeking,
+          height,
+          weight,
+          role_pref: isManSeekingMan ? rolePref : null,
+          safety_pref: isManSeekingMan ? safetyPref : null,
+          playstyle_pref: isManSeekingMan ? playstylePref : null,
+          how_many_pref: isManSeekingMan ? howManyPref : null,
+          where_pref: isManSeekingMan ? wherePref : null,
+          non_man_mode: isManSeekingMan ? null : nonManMode,
+        },
+      });
+      applyOwnProfile(result.profile);
+      if (isManSeekingMan) applyDefaultFiltersFromPreferences(rolePref, safetyPref, playstylePref, howManyPref);
+      setShowProfileSetup(false);
+      setShowProfileEditModal(false);
+      loadFilterPrefs();
+      await fetchUsersData();
+    } catch (error) {
+      setErrorMessage(`${t('errorSaving')} ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  // Open a Telegram invoice with a graceful fallback if openInvoice is
+  // unavailable (desktop bug, older client): returns 'paid', 'failed', or 'unsupported'.
+  const startInvoice = (invoiceLink: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const w = window.Telegram?.WebApp;
+      if (w?.openInvoice) {
+        w.openInvoice(invoiceLink, (status: string) => resolve(status === 'paid' ? 'paid' : 'failed'));
+      } else if (typeof invoiceLink === 'string' && invoiceLink.startsWith('https://t.me/')) {
+        try {
+          if (w?.openTelegramLink) w.openTelegramLink(invoiceLink);
+          else window.open(invoiceLink, '_blank', 'noopener,noreferrer');
+        } catch {
+          window.open(invoiceLink, '_blank', 'noopener,noreferrer');
+        }
+        resolve('unsupported'); // client UI can't observe the result; do NOT auto-apply perks
+      } else {
+        resolve('failed');
+      }
+    });
+  };
+
+  const startPurchase = async (type: string) => {
+    const result = await workerPost('/create-invoice', { userId: currentUser?.id, type });
+    if (!result.invoiceLink) throw new Error('The payment service did not return an invoice link.');
+    return startInvoice(result.invoiceLink as string);
+  };
+
+  const handleBuyRaffleTicket = async () => {
+    if (rafflePurchasing) return;
+    const copy = raffleUiCopy[lang];
+    if (!currentUser?.username) {
+      setRaffleNotice(copy.usernameRequired);
+      return;
+    }
+    if (raffleState && !raffleState.canPurchase) {
+      setRaffleNotice(raffleState.usernameRequired ? copy.usernameRequired : copy.adultProfileRequired);
+      return;
+    }
+
+    setRaffleNotice('');
+    setRafflePurchasing(true);
+    let intentId: string | null = null;
+    const previousCount = raffleState?.userTicketCount || 0;
+    try {
+      const result = await workerPost('/api/raffle/ticket');
+      if (typeof result.invoiceLink !== 'string' || typeof result.intentId !== 'string') {
+        throw new Error('The payment service did not return a raffle invoice.');
+      }
+      intentId = result.intentId;
+      pendingRafflePurchaseRef.current = {
+        previousCount,
+        expiresAt: Date.now() + 15 * 60_000,
+      };
+      setRaffleNotice(copy.processing);
+      const invoiceStatus = await startInvoice(result.invoiceLink);
+      if (invoiceStatus === 'paid') {
+        let confirmed = false;
+        for (let attempt = 0; attempt < 12; attempt++) {
+          try {
+            const updated = await refreshRaffleState();
+            if (updated.userTicketCount > previousCount) {
+              confirmed = true;
+              break;
+            }
+          } catch {
+            // Payment webhooks can arrive after Telegram closes the invoice.
+          }
+          if (attempt < 11) await new Promise((resolve) => window.setTimeout(resolve, 500));
+        }
+        setRaffleNotice(confirmed ? copy.ticketPurchased : copy.paymentProcessing);
+      } else if (invoiceStatus === 'unsupported') {
+        // Keep the intent open: the user may finish the invoice in Telegram,
+        // and the next state poll will confirm the ticket if paid.
+        setRaffleNotice(copy.invoiceFallback);
+      } else {
+        pendingRafflePurchaseRef.current = null;
+        try { await workerPost('/api/raffle/cancel', { intentId }); } catch {}
+        setRaffleNotice(copy.paymentCancelled);
+      }
+    } catch (error) {
+      pendingRafflePurchaseRef.current = null;
+      if (intentId) {
+        try { await workerPost('/api/raffle/cancel', { intentId }); } catch {}
+      }
+      setRaffleNotice(error instanceof Error ? error.message : 'Could not start raffle ticket purchase.');
+    } finally {
+      setRafflePurchasing(false);
+    }
+  };
+
+  const handleSendFlyingMessage = async () => {
+    const text = flyingMessageText.trim();
+    if (!text || sendingFlyingMessage) return;
+    setFlyingMessageNotice('');
+    setSendingFlyingMessage(true);
+    try {
+      const result = await workerPost('/api/messages', { text });
+      if (result.message) {
+        mergeFlyingMessages([result.message as FlyingMessage]);
+        setFlyingMessageText('');
+        setFlyingCooldownUntil(Date.now() + 60_000);
+        return;
+      }
+
+      if (result.ok === true) {
+        throw new Error('The message service returned an incomplete response. Please try again later.');
+      }
+      if (!result.invoiceLink || !result.intentId) {
+        throw new Error('The payment service returned an incomplete invoice response. Please try again later.');
+      }
+      const invoiceStatus = await startInvoice(result.invoiceLink as string);
+      if (invoiceStatus === 'paid') {
+        setFlyingMessageText('');
+        let paidMessage: FlyingMessage | null = null;
+        for (let attempt = 0; attempt < 12; attempt++) {
+          try {
+            const status = await workerPost('/api/messages/status', { intentId: result.intentId });
+            if (status.status === 'fulfilled') {
+              paidMessage = status.message as FlyingMessage | null;
+              break;
+            }
+          } catch {
+            // The webhook may still be processing; keep checking briefly.
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+        }
+        if (paidMessage) mergeFlyingMessages([paidMessage]);
+        setFlyingCooldownUntil(Date.now() + 60_000);
+        setFlyingMessageNotice(paidMessage ? '' : t('paymentProcessing'));
+      } else if (invoiceStatus === 'unsupported') {
+        setFlyingMessageText('');
+        setFlyingMessageNotice(flyingMessageCopy[lang].invoiceFallback);
+      } else {
+        try { await workerPost('/api/messages/cancel', { intentId: result.intentId }); } catch {}
+        setFlyingMessageText(text);
+        setFlyingMessageNotice(t('paymentCancelled'));
+      }
+    } catch (error) {
+      const apiError = error as Error & { retryAfter?: number };
+      if (apiError.retryAfter) setFlyingCooldownUntil(Date.now() + apiError.retryAfter * 1000);
+      setFlyingMessageNotice(apiError.message || 'Message could not be sent.');
+    } finally {
+      setSendingFlyingMessage(false);
+    }
+  };
+
+  const verifyFilterSubscription = async (): Promise<boolean> => {
+    if (paidUnlocked || hasFilterSub) return true;
+    const confirmed = window.confirm(t('filterSubPrompt'));
+    if (!confirmed) return false;
+    try {
+      const baseline = Math.max(Date.now(), filterSubUntilRef.current);
+      const status = await startPurchase('change_filter');
+      if (status === 'paid') {
+        const minimumExpiry = baseline + 29 * 24 * 60 * 60 * 1000;
+        const profile = await waitForPaidProfile((value) =>
+          new Date(value.filter_sub_expiry || 0).getTime() >= minimumExpiry,
+        );
+        if (profile && new Date(profile.filter_sub_expiry || 0).getTime() >= minimumExpiry) return true;
+        alert(t('paymentProcessing'));
+      } else if (status !== 'unsupported') {
+        alert(t('paymentCancelled'));
+      }
+    } catch (err) {
+      console.error('Invoice error:', err);
+      alert(t('paymentCancelled'));
+    }
+    return false;
+  };
+
+  const FILTER_PREFS_KEY = 'whos_nearby_filter_prefs';
+  const FILTER_SUB_KEY = 'whos_nearby_filter_sub_until';
+
+  const applyOwnProfile = (profile: any) => {
+    if (!profile) return;
+    setCurrentUser((previous) => previous ? { ...previous, ...profile } : profile);
+    setHideAge(profile.hide_age === true);
+    setHideAgeExpiry(profile.hide_age_expiry || null);
+    setInvisibleExpiry(profile.invisible_expiry || null);
+    setGridVisible(profile.grid_visible ?? true);
+    setMapVisible(profile.map_visible ?? false);
+    const subscriptionExpiry = profile.filter_sub_expiry
+      ? new Date(profile.filter_sub_expiry).getTime()
+      : 0;
+    const validExpiry = Number.isFinite(subscriptionExpiry) && subscriptionExpiry > Date.now()
+      ? subscriptionExpiry
+      : 0;
+    setFilterSubUntil(validExpiry);
+    filterSubUntilRef.current = validExpiry;
+    setHasFilterSub(validExpiry > 0);
+    try {
+      if (validExpiry) localStorage.setItem(FILTER_SUB_KEY, String(validExpiry));
+      else localStorage.removeItem(FILTER_SUB_KEY);
+    } catch {}
+  };
+
+  const waitForPaidProfile = async (isGranted: (profile: any) => boolean) => {
+    let latestProfile: any = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const result = await workerPost('/api/auth');
+      latestProfile = result.profile;
+      if (latestProfile) applyOwnProfile(latestProfile);
+      if (latestProfile && isGranted(latestProfile)) return latestProfile;
+      if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return latestProfile;
+  };
+
+  const loadFilterPrefs = () => {
+    try {
+      let subUntil = filterSubUntilRef.current;
+      // Drop expired cached subscriptions so stale localStorage can't grant access.
+      if (subUntil && subUntil <= Date.now()) {
+        subUntil = 0;
+        try { localStorage.removeItem(FILTER_SUB_KEY); } catch {}
+      }
+      setFilterSubUntil(subUntil); filterSubUntilRef.current = subUntil;
+      const raw = localStorage.getItem(FILTER_PREFS_KEY);
+      if (!raw) { setFilterAgeOn(false); setFilterHeightOn(false); setFilterPrefMatcherOn(true); return; }
+      const saved = JSON.parse(raw);
+      const hasSub = paidUnlocked || (subUntil > Date.now());
+      if (!hasSub) { setFilterAgeOn(false); setFilterHeightOn(false); setFilterPrefMatcherOn(true); return; }
+      setFilterAgeOn(!!saved.ageOn);
+      if (typeof saved.ageMin === 'number') setFilterAgeMin(saved.ageMin);
+      if (typeof saved.ageMax === 'number') setFilterAgeMax(saved.ageMax);
+      setFilterHeightOn(!!saved.heightOn);
+      if (typeof saved.heightMin === 'number') setFilterHeightMin(saved.heightMin);
+      if (typeof saved.heightMax === 'number') setFilterHeightMax(saved.heightMax);
+      setFilterPrefMatcherOn(saved.prefMatcherOn !== false);
+      if (saved.roleVal !== undefined) setFilterRoleVal(saved.roleVal);
+      if (saved.safetyVal !== undefined) setFilterSafetyVal(saved.safetyVal);
+      if (saved.playstyleVal !== undefined) setFilterPlaystyleVal(saved.playstyleVal);
+      if (saved.howManyVal !== undefined) setFilterHowManyVal(saved.howManyVal);
+      if (saved.whereVal !== undefined) setFilterWhereVal(saved.whereVal);
+    } catch (e) { console.error('Load filter prefs error:', e); }
+  };
+
+  const persistFilterPrefs = (next: any) => {
+    try {
+      const hasSub = paidUnlocked || (filterSubUntilRef.current > Date.now());
+      if (!hasSub) return;
+      const saved = { ageOn: next.ageOn !== undefined ? next.ageOn : filterAgeOn, ageMin: next.ageMin !== undefined ? next.ageMin : filterAgeMin, ageMax: next.ageMax !== undefined ? next.ageMax : filterAgeMax, heightOn: next.heightOn !== undefined ? next.heightOn : filterHeightOn, heightMin: next.heightMin !== undefined ? next.heightMin : filterHeightMin, heightMax: next.heightMax !== undefined ? next.heightMax : filterHeightMax, prefMatcherOn: next.prefMatcherOn !== undefined ? next.prefMatcherOn : filterPrefMatcherOn, roleVal: next.roleVal !== undefined ? next.roleVal : filterRoleVal, safetyVal: next.safetyVal !== undefined ? next.safetyVal : filterSafetyVal, playstyleVal: next.playstyleVal !== undefined ? next.playstyleVal : filterPlaystyleVal, howManyVal: next.howManyVal !== undefined ? next.howManyVal : filterHowManyVal, whereVal: next.whereVal !== undefined ? next.whereVal : filterWhereVal };
+      localStorage.setItem(FILTER_PREFS_KEY, JSON.stringify(saved));
+    } catch (e) { console.error('Persist filter prefs error:', e); }
+  };
+
+  const handleToggleGrid = async () => {
+    if (!currentUser) return;
+    const nextVal = !gridVisible;
+    if (!nextVal && !paidUnlocked) {
+      const expiry = invisibleExpiry ? new Date(invisibleExpiry).getTime() : 0;
+      if (expiry <= Date.now()) {
+        if (!window.confirm(t('invisiblePrompt'))) return;
+        try {
+          const status = await startPurchase('invisible');
+          if (status === 'paid') {
+            const minimumExpiry = Date.now() + 29 * 24 * 60 * 60 * 1000;
+            const profile = await waitForPaidProfile((value) =>
+              value.grid_visible === false &&
+              new Date(value.invisible_expiry || 0).getTime() >= minimumExpiry,
+            );
+            if (profile && profile.grid_visible === false &&
+                new Date(profile.invisible_expiry || 0).getTime() >= minimumExpiry) {
+              setView('grid');
+              await fetchUsersData();
+              return;
+            }
+            alert(t('paymentProcessing'));
+          } else if (status !== 'unsupported') {
+            alert(t('paymentCancelled'));
+          }
+        } catch (error) {
+          console.error('Invisible invoice error:', error);
+          alert(t('paymentCancelled'));
+        }
+        return;
+      }
+    }
+    try {
+      const result = await workerPost('/api/profile', { profile: { grid_visible: nextVal } });
+      applyOwnProfile(result.profile);
+      setView('grid');
+      await fetchUsersData();
+    } catch (error) {
+      console.error('Could not update grid visibility:', error);
+      alert(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleToggleMap = async () => {
+    if (!currentUser) return;
+    const nextVal = !mapVisible;
+    try {
+      const result = await workerPost('/api/profile', { profile: { map_visible: nextVal } });
+      applyOwnProfile(result.profile);
+      setView(nextVal ? 'map' : 'grid');
+      if (nextVal) setHasOpenedMap(true);
+      await fetchUsersData();
+    } catch (error) {
+      console.error('Could not update map visibility:', error);
+      alert(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleUpdateSelfField = async (fields: Partial<UserProfile>) => {
+    if (!currentUser) return;
+    try {
+      const result = await workerPost('/api/profile', { profile: fields });
+      applyOwnProfile(result.profile);
+      await fetchUsersData();
+    } catch (error) {
+      if ('where_pref' in fields) setWherePref(currentUser.where_pref || null);
+      if ('playstyle_pref' in fields) {
+        setPlaystylePref(currentUser.playstyle_pref || 'Clean');
+        setFilterPlaystyleVal(currentUser.playstyle_pref || null);
+      }
+      setSelectedProfile((previous) => previous ? { ...previous, ...currentUser } : previous);
+      console.error('Could not update profile field:', error);
+      alert(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleHideAgeToggle = async () => {
+    if (!currentUser) return;
+    const nextHide = !hideAge;
+    if (nextHide && !paidUnlocked) {
+      const expiry = hideAgeExpiry ? new Date(hideAgeExpiry).getTime() : 0;
+      if (expiry <= Date.now()) {
+        if (!window.confirm(t('hideAgePrompt'))) return;
+        try {
+          const status = await startPurchase('hide_age');
+          if (status === 'paid') {
+            const minimumExpiry = Date.now() + 29 * 24 * 60 * 60 * 1000;
+            const profile = await waitForPaidProfile((value) =>
+              value.hide_age === true &&
+              new Date(value.hide_age_expiry || 0).getTime() >= minimumExpiry,
+            );
+            if (profile && profile.hide_age === true &&
+                new Date(profile.hide_age_expiry || 0).getTime() >= minimumExpiry) return;
+            alert(t('paymentProcessing'));
+          } else if (status !== 'unsupported') {
+            alert(t('paymentCancelled'));
+          }
+        } catch (error) {
+          console.error('Hide age invoice error:', error);
+          alert(t('paymentCancelled'));
+        }
+        return;
+      }
+    }
+    await handleUpdateSelfField({ hide_age: nextHide });
+  };
+
+  const handleResetProfile = async () => {
+    if (!currentUser) return;
+    if (paidUnlocked) { setShowProfileEditModal(true); return; }
+    const confirmed = window.confirm(t('unlockPreferencePrompt'));
+    if (!confirmed) return;
+    try {
+      const status = await startPurchase('edit_profile');
+      if (status === 'paid') {
+        const profile = await waitForPaidProfile((value) =>
+          value.edit_profile_pass === true &&
+          new Date(value.edit_profile_expiry || 0).getTime() > Date.now(),
+        );
+        if (profile?.edit_profile_pass === true &&
+            new Date(profile.edit_profile_expiry || 0).getTime() > Date.now()) {
+          setShowProfileEditModal(true);
+        } else {
+          alert(t('paymentProcessing'));
+        }
+      } else if (status !== 'unsupported') {
+        alert(t('paymentCancelled'));
+      }
+    } catch (err) { console.error('Reset profile invoice error:', err); alert(t('paymentCancelled')); }
+  };
+
+  const handleCardClick = (targetUser: UserProfile) => { setShowFilterDropdown(false); setSelectedProfile(targetUser); if (currentUser && targetUser.id !== currentUser.id) loadPrivateNote(targetUser.id); else { setNoteDraft(''); setShowNoteBox(false); } };
+
+  const handleStartChat = (targetUser: UserProfile) => {
+    if (!checkFilterPass(targetUser)) return;
+    if (targetUser.username) {
+      const chatUrl = `https://t.me/${targetUser.username}`;
+      if (window.Telegram?.WebApp?.openTelegramLink) window.Telegram.WebApp.openTelegramLink(chatUrl);
+      else window.open(chatUrl, '_blank');
+    } else if (targetUser.id.startsWith('tg_')) {
+      const rawTgId = targetUser.id.replace('tg_', '');
+      const profileUrl = `https://t.me/user?id=${rawTgId}`;
+      if (window.Telegram?.WebApp?.openTelegramLink) window.Telegram.WebApp.openTelegramLink(profileUrl);
+      else window.open(profileUrl, '_blank');
+    } else { alert(t('selectedUser').replace('{n}', targetUser.name)); }
+    setSelectedProfile(null);
+  };
+
+  const checkFilterPass = (user: UserProfile) => {
+    if (currentUser && user.id === currentUser.id) return true;
+    if (filterAgeOn) { const age = typeof user.age === 'number' ? user.age : calculateAge(user.dob); if (age === null || age < filterAgeMin || age > filterAgeMax) return false; }
+    if (filterHeightOn) { const h = parseHeightMeters(user.height); if (h === null || h < filterHeightMin || h > filterHeightMax) return false; }
+    const userIsManSeekingMan = user.gender === 'man' && user.seeking === 'men';
+    if (filterPrefMatcherOn && userIsManSeekingMan) {
+      if (filterRoleVal && filterRoleVal !== 'Off') {
+        if (filterRoleVal === 'VT') { if (user.role_pref !== 'Versatile' && user.role_pref !== 'Top') return false; }
+        else if (filterRoleVal === 'VB') { if (user.role_pref !== 'Versatile' && user.role_pref !== 'Bottom') return false; }
+        else { if (user.role_pref !== filterRoleVal && user.role_pref !== 'Versatile') return false; }
+      }
+      if (filterSafetyVal && filterSafetyVal !== 'Off') { if (user.safety_pref !== filterSafetyVal) return false; }
+      if (filterPlaystyleVal && filterPlaystyleVal !== 'Off') {
+        if (filterPlaystyleVal === 'Party') { if (user.playstyle_pref !== 'Party' && user.playstyle_pref !== 'Party✓') return false; }
+        else if (user.playstyle_pref !== filterPlaystyleVal) return false;
+      }
+      if (filterWhereVal && filterWhereVal !== 'Off') { if (user.where_pref !== filterWhereVal) return false; }
+    }
+    return true;
+  };
+
+  const handleOpenExternalApp = (url: string) => {
+    if (url.includes('t.me') && window.Telegram?.WebApp?.openTelegramLink) window.Telegram.WebApp.openTelegramLink(url);
+    else if (window.Telegram?.WebApp?.openLink) window.Telegram.WebApp.openLink(url);
+    else window.open(url, '_blank');
+  };
+
+  // On app load: read ALL existing private notes from Telegram CloudStorage
+  // (falling back to localStorage) so each profile card shows its saved note.
+  const NOTE_PREFIX = 'whos_nearby_private_note_';
+  useEffect(() => {
+    const hydrate = (k: string, val: string | null | undefined) => {
+      const text = parseNotePayload(val);
+      if (text === null) return;
+      const targetId = k.slice(NOTE_PREFIX.length).split('_').slice(1).join('_');
+      if (!targetId) return;
+      setNotesMap((m) => (m[targetId] === text ? m : { ...m, [targetId]: text }));
+    };
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(NOTE_PREFIX)) hydrate(k, localStorage.getItem(k));
+      }
+    } catch {}
+    const cs: any = window.Telegram?.WebApp?.CloudStorage;
+    if (cs?.getItems) {
+      try {
+        const keys: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(NOTE_PREFIX)) keys.push(k);
+        }
+        cs.getItems(keys, (err: any, val: any) => { if (!err && val) Object.entries(val).forEach(([k, v]) => hydrate(k, v as string)); });
+      } catch {}
+    } else if (cs?.getItem) {
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(NOTE_PREFIX)) cs.getItem(k, (err: any, val: any) => { if (!err) hydrate(k, val); });
+        }
+      } catch {}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
+  if (!isReady) {
+    return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#121212', color: '#ffffff', fontFamily: 'sans-serif' }}><p>{t('loading')}</p></div>;
+  }
+  if (isLocationDenied) {
+    return <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw', backgroundColor: '#121212', color: '#ff4d4d', fontFamily: 'sans-serif', padding: '20px', textAlign: 'center', boxSizing: 'border-box' }}><h2 style={{ fontSize: '24px', marginBottom: '16px' }}>{t('locationRequired')}</h2><p style={{ fontSize: '16px', color: '#ffffff', maxWidth: '360px', lineHeight: '1.5' }}>{t('locationMessage')}</p></div>;
+  }
+  if (startupError) {
+    return <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw', backgroundColor: '#121212', color: '#ffffff', fontFamily: 'sans-serif', padding: '20px', textAlign: 'center', boxSizing: 'border-box' }}><h2 style={{ fontSize: '22px', marginBottom: '12px' }}>{t('accessDenied')}</h2><p style={{ maxWidth: '360px', lineHeight: '1.5', color: '#ffb4b4' }}>{startupError}</p><button type="button" onClick={() => window.location.reload()} style={{ marginTop: '20px', padding: '12px 22px', border: 0, borderRadius: '10px', background: '#3b82f6', color: '#fff', font: 'inherit', fontWeight: 700, cursor: 'pointer' }}>{t('refresh')}</button></div>;
+  }
+  if (isUnderageLocked) {
+    return <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw', backgroundColor: '#121212', color: '#ff4d4d', fontFamily: 'sans-serif', padding: '20px', textAlign: 'center', boxSizing: 'border-box' }}><h2 style={{ fontSize: '24px', marginBottom: '16px' }}>{t('accessDenied')}</h2><p style={{ fontSize: '16px', color: '#ffffff', maxWidth: '360px', lineHeight: '1.5' }}>{t('underageMessage')}</p></div>;
+  }
+
+  const noteKeyFor = (targetId: string | undefined) => {
+    const viewerId = currentUser?.id || localStorage.getItem('whos_nearby_user_id') || 'anon';
+    return `whos_nearby_private_note_${viewerId}_${targetId}`;
+  };
+
+  // Private notes are stored ONLY in Telegram CloudStorage (bot-scoped, per-user)
+  // with a localStorage cache. They are never written to Supabase.
+  // Stored payload: JSON { t: text, x: expiryEpochMs|null } (expiry = 30 days
+  // from last save, using the same 30-day window as other subscriptions).
+  const NOTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+  const parseNotePayload = (raw: string | null | undefined): string | null => {
+    if (!raw) return null;
+    try {
+      const p = JSON.parse(raw);
+      if (p && typeof p.t === 'string') {
+        if (p.x && Number(p.x) < Date.now()) return null; // expired
+        return (p.t || '').slice(0, 100);
+      }
+    } catch {}
+    return raw.slice(0, 100); // legacy plain-text value
+  };
+
+  const loadPrivateNote = (targetId: string | undefined) => {
+    if (!targetId || targetId === currentUser?.id) { setNoteDraft(''); setShowNoteBox(false); return; }
+    const key = noteKeyFor(targetId);
+    const apply = (val: string | null | undefined) => { const text = parseNotePayload(val); if (text !== null) { setNoteDraft(text); setNotesMap((m) => ({ ...m, [targetId]: text })); setShowNoteBox(text.trim().length > 0); } };
+    setNoteDraft(notesMap[targetId] || '');
+    setShowNoteBox((notesMap[targetId] || '').trim().length > 0);
+    try {
+      const local = localStorage.getItem(key);
+      if (local !== null) apply(local);
+    } catch {}
+    try {
+      const cs = window.Telegram?.WebApp?.CloudStorage;
+      cs?.getItem?.(key, (err, val) => { if (!err) apply(val); });
+    } catch {}
+  };
+
+  const savePrivateNote = (targetId: string | undefined, value: string) => {
+    if (!targetId || targetId === currentUser?.id) return;
+    const text = (value || '').slice(0, 100);
+    setNoteDraft(text);
+    setShowNoteBox(text.trim().length > 0);
+    setNotesMap((m) => ({ ...m, [targetId]: text }));
+    const key = noteKeyFor(targetId);
+    const payload = JSON.stringify({ t: text, x: text ? Date.now() + NOTE_TTL_MS : null });
+    try { localStorage.setItem(key, payload); } catch {}
+    try { window.Telegram?.WebApp?.CloudStorage?.setItem?.(key, payload); } catch {}
+  };
+
+  const handleForceReset = async () => {
+    if (!selectedProfile) return;
+    if (!window.confirm(t('forceResetConfirm').replace('{n}', selectedProfile.name || ''))) return;
+    try {
+      await workerPost('/api/reset-profile', { target_id: selectedProfile.id });
+      alert(t('profileReset'));
+    } catch (e) { console.error(e); alert(formatAdminFailure(e, t('resetFailed'))); }
+  };
+
+  const loadRoles = async () => {
+    setRolesLoading(true);
+    setRolesLoadError('');
+    try {
+      const data = await workerPost('/api/roles', { action: 'list' });
+      if (!Array.isArray(data)) throw new Error('Invalid admin/VIP list response');
+      setRoles(data as { username: string; role: string }[]);
+    } catch (error) {
+      console.error('Could not load managed roles:', error);
+      setRolesLoadError(t('roleUpdateFailed'));
+    } finally {
+      setRolesLoading(false);
+    }
+  };
+
+  const handleAddRole = async () => {
+    const uname = newRoleUsername.trim().toLowerCase().replace(/^@/, '');
+    if (!uname) return;
+    if (uname === 'mileschan852') { alert(t('ownerImmutable')); return; }
+    try {
+      await workerPost('/api/roles', { action: 'add', username: uname, role: newRole });
+      setNewRoleUsername('');
+      await loadRoles();
+    } catch (e) { console.error(e); alert(formatAdminFailure(e, t('roleUpdateFailed'))); }
+  };
+
+  const handleRemoveRole = async (username: string) => {
+    if (username.toLowerCase() === 'mileschan852') { alert(t('ownerImmutable')); return; }
+    try {
+      await workerPost('/api/roles', { action: 'remove', username });
+      await loadRoles();
+    } catch (e) { console.error(e); alert(formatAdminFailure(e, t('roleUpdateFailed'))); }
+  };
+
+  const handleGrantGlobalVip = async (ms: number) => {
+    const until = ms > 0 ? Date.now() + ms : 0;
+    try {
+      await workerPost('/api/global-vip', { until });
+      setGlobalVipUntil(until);
+      setShowVipPeriods(false);
+      setShowAdminMenu(false);
+    } catch (e) { console.error(e); alert(formatAdminFailure(e, t('roleUpdateFailed'))); }
+  };
+
+  const handleSaveFlyingPrice = async () => {
+    const price = Number(flyingPriceDraft);
+    if (!Number.isSafeInteger(price) || price < 0 || price > 10_000) {
+      setFlyingMessageNotice('Price must be between 0 and 10000 Stars.');
+      return;
+    }
+    setSavingFlyingPrice(true);
+    try {
+      const result = await workerPost('/api/admin/flying-message-price', { starsPrice: price });
+      setFlyingMessagePrice(result.starsPrice);
+      setFlyingPriceDraft(String(result.starsPrice));
+      setShowFlyingPriceEditor(false);
+      setShowAdminMenu(false);
+      setFlyingMessageNotice('');
+    } catch (error) {
+      setFlyingMessageNotice(formatAdminFailure(error, 'Price could not be saved.'));
+    } finally {
+      setSavingFlyingPrice(false);
+    }
+  };
+
+  const handleResetAll = async () => {
+    if (!window.confirm(t('forceResetAllConfirm'))) return;
+    try {
+      await workerPost('/api/reset-all');
+      setShowAdminMenu(false);
+      alert(t('resetAllDone'));
+    } catch (e) { console.error(e); alert(formatAdminFailure(e, t('resetFailed'))); }
+  };
+
+  const filterSubStatusInfo = (() => {
+    if (!paidUnlocked && !hasFilterSub && !(filterSubUntil > Date.now())) return { label: t('unsubscribed'), color: '#888' };
+    if (filterSubUntil > Date.now()) return { label: t('subscribedUntil').replace('{d}', new Date(filterSubUntil).toLocaleDateString()), color: '#4ade80' };
+    return { label: t('expired'), color: '#e11d48' };
+  })();
+
+  const isViewingSelf = selectedProfile ? (currentUser && selectedProfile.id === currentUser.id) : false;
+  const activeProfile = selectedProfile;
+  const gridFilteredUsers = users;
+  // Self is excluded from the shared list; your own pin is rendered separately
+  // at your live GPS location and is visible ONLY to you (greyed out only when
+  // actually invisible, i.e. grid toggle off - NOT when the map toggle is off).
+  const mapFilteredUsers = users.filter((u) => (u.id === currentUser?.id ? false : (u.map_visible === true)));
+  const isManSeekingManInput = gender === 'man' && seeking === 'men';
+  const targetIsManSeekingMan = activeProfile?.gender === 'man' && activeProfile?.seeking === 'men';
+  const passesFilterForActive = activeProfile ? checkFilterPass(activeProfile) : true;
+  const flyingMessageWaitSeconds = Math.max(0, Math.ceil((flyingCooldownUntil - cooldownClock) / 1000));
+  const flyingCopy = flyingMessageCopy[lang];
+  const raffleCopy = raffleUiCopy[lang];
+  const raffleDeadline = raffleState?.closesAt && Number.isFinite(Date.parse(raffleState.closesAt))
+    ? Date.parse(raffleState.closesAt)
+    : getNextRaffleCloseAt(raffleClock);
+  const raffleCountdown = formatRaffleCountdown(raffleDeadline, raffleClock, lang);
+  const flyingComposerStatus = flyingMessageNotice || (
+    flyingMessageWaitSeconds > 0
+      ? flyingCopy.cooldown.replace('{seconds}', String(flyingMessageWaitSeconds))
+      : ''
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', backgroundColor: '#121212', color: '#ffffff', fontFamily: 'sans-serif', overflow: 'hidden' }}>
+
+      {(showProfileSetup || showProfileEditModal) && (
+        <ProfileCompletionModule
+          entry={entry}
+          values={{
+            dob,
+            gender,
+            seeking,
+            height,
+            weight,
+            rolePref,
+            safetyPref,
+            playstylePref,
+            howManyPref,
+            wherePref,
+            nonManMode,
+          }}
+          onChange={{
+            dob: setDob,
+            gender: setGender,
+            seeking: setSeeking,
+            height: setHeight,
+            weight: setWeight,
+            rolePref: setRolePref,
+            safetyPref: setSafetyPref,
+            playstylePref: setPlaystylePref,
+            howManyPref: setHowManyPref,
+            wherePref: setWherePref,
+            nonManMode: setNonManMode,
+          }}
+          onSubmit={handleSaveInitialProfile}
+          onClose={() => setShowProfileEditModal(false)}
+          showCloseButton={showProfileEditModal}
+          errorMessage={errorMessage}
+          heightOptions={heightOptions}
+          weightOptions={weightOptions}
+          t={t}
+          onCycleRole={() => setRolePref(cycleNext(rolePref, roleCycleOptions))}
+          onCycleSafety={() => setSafetyPref(cycleNext(safetyPref, safetyCycleOptions))}
+          onCyclePlaystyle={() => setPlaystylePref(cycleNext(playstylePref, ['Clean', 'Party']))}
+          onCycleHowMany={() => setHowManyPref(cycleNext(howManyPref, howManyCycleOptions))}
+          onCycleWhere={() => setWherePref(cycleWhere(wherePref, whereCycleOptions))}
+        />
+      )}
+
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px', height: '60px', minHeight: '60px', backgroundColor: '#1e1e1e', borderBottom: '1px solid #333', zIndex: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#007bff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+          <h1 style={{ fontSize: '18px', margin: 0, fontWeight: 'bold' }}>{entry.id === 'hkmo-date' ? entry.label : t('whosNearby')} ({gridFilteredUsers.length})</h1>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', position: 'relative' }}>
+          <button onClick={handleToggleFilterDropdown} style={{ width: '36px', height: '36px', backgroundColor: '#2a2a2a', border: '1px solid #444', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title={t('filter')}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>
+          </button>
+          {showFilterDropdown && (
+            <div style={{ position: 'absolute', top: '44px', right: '0', zIndex: 2000, backgroundColor: '#1e1e1e', border: '1px solid #444', borderRadius: '8px', padding: '12px', width: '280px', boxShadow: '0 6px 20px rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>{t('filterUsers')}<span style={{ fontSize: '11px', fontWeight: 'normal', color: isAdmin ? '#4ade80' : isVip || temporaryVipActive ? '#f5c518' : globalVipActive ? '#f5c518' : filterSubStatusInfo.color }}>{isAdmin ? t('admin') : isVip ? t('vipUnlimited') : temporaryVipActive ? `${t('vip')} · ${t('expires')} ${new Date(vipExpiry as string).toLocaleDateString()}` : globalVipActive ? `${t('vip')} · ${t('expires')} ${new Date(globalVipUntil).toLocaleDateString()}` : `${filterSubStatusInfo.label}${filterSubUntil > Date.now() ? ` · ${t('expires')} ${new Date(filterSubUntil).toLocaleDateString()}` : ''}`}</span></div>
+              <div style={{ borderTop: '1px solid #333', paddingTop: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => handleToggleFilterItem('age')}>
+                  <input type="checkbox" checked={filterAgeOn} onChange={() => {}} style={{ width: '16px', height: '16px', accentColor: '#007bff', cursor: 'pointer' }} />
+                  <span style={{ fontSize: '13px', color: '#fff', fontWeight: 'bold' }}>{t('ageRange')}</span>
+                </div>
+                {filterAgeOn && (<div style={{ marginTop: '8px', padding: '0 4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#aaa', marginBottom: '2px' }}><span>{filterAgeMin}</span><span>{filterAgeMax}</span></div>
+                  <input type="range" min={18} max={80} value={filterAgeMin} onChange={(e) => { const v = Number(e.target.value); if (v <= filterAgeMax) handleAgeRangeChange(v, filterAgeMax); }} style={{ width: '100%', accentColor: '#007bff' }} />
+                  <input type="range" min={18} max={80} value={filterAgeMax} onChange={(e) => { const v = Number(e.target.value); if (v >= filterAgeMin) handleAgeRangeChange(filterAgeMin, v); }} style={{ width: '100%', accentColor: '#007bff', marginTop: '-8px' }} />
+                </div>)}
+              </div>
+              <div style={{ borderTop: '1px solid #333', paddingTop: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => handleToggleFilterItem('height')}>
+                  <input type="checkbox" checked={filterHeightOn} onChange={() => {}} style={{ width: '16px', height: '16px', accentColor: '#007bff', cursor: 'pointer' }} />
+                  <span style={{ fontSize: '13px', color: '#fff', fontWeight: 'bold' }}>{t('height')}</span>
+                </div>
+                {filterHeightOn && (<div style={{ marginTop: '8px', padding: '0 4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#aaa', marginBottom: '2px' }}><span>{filterHeightMin / 100}m</span><span>{filterHeightMax / 100}m</span></div>
+                  <input type="range" min={140} max={220} step={1} value={filterHeightMin} onChange={(e) => { const v = Number(e.target.value); if (v <= filterHeightMax) handleHeightRangeChange(v, filterHeightMax); }} style={{ width: '100%', accentColor: '#007bff' }} />
+                  <input type="range" min={140} max={220} step={1} value={filterHeightMax} onChange={(e) => { const v = Number(e.target.value); if (v >= filterHeightMin) handleHeightRangeChange(filterHeightMin, v); }} style={{ width: '100%', accentColor: '#007bff', marginTop: '-8px' }} />
+                </div>)}
+              </div>
+              {isManSeekingManInput && (<div style={{ borderTop: '1px solid #333', paddingTop: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => handleToggleFilterItem('prefMatcher')}>
+                  <input type="checkbox" checked={filterPrefMatcherOn} onChange={() => {}} style={{ width: '16px', height: '16px', accentColor: '#007bff', cursor: 'pointer' }} />
+                  <span style={{ fontSize: '13px', color: '#fff', fontWeight: 'bold' }}>{t('preferenceMatcher')}</span>
+                </div>
+                <div style={{ fontSize: '11px', color: '#888', marginTop: '2px', paddingLeft: '24px' }}>{t('m2m')}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px', paddingLeft: '24px' }}>
+                  <button type="button" onClick={() => handleToggleFilterValue('role')} style={{ flex: '1 1 40%', minWidth: '90px', padding: '8px 4px', backgroundColor: filterRoleVal ? '#e11d48' : '#2a2a2a', color: '#fff', border: filterRoleVal ? '1px solid #e11d48' : '1px solid #444', borderRadius: '6px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'center', opacity: filterRoleVal ? 1 : 0.45, filter: filterRoleVal ? 'none' : 'grayscale(100%)' }}>{filterRoleVal ? formatTagText(t(filterRoleVal)) : t('Off')}</button>
+                  <button type="button" onClick={() => handleToggleFilterValue('safety')} style={{ flex: '1 1 40%', minWidth: '90px', padding: '8px 4px', backgroundColor: filterSafetyVal ? '#2563eb' : '#2a2a2a', color: '#fff', border: filterSafetyVal ? '1px solid #2563eb' : '1px solid #444', borderRadius: '6px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'center', opacity: filterSafetyVal ? 1 : 0.45, filter: filterSafetyVal ? 'none' : 'grayscale(100%)' }}>{filterSafetyVal ? formatTagText(t(filterSafetyVal)) : t('Off')}</button>
+                  <button type="button" onClick={() => handleToggleFilterValue('playstyle')} style={{ flex: '1 1 40%', minWidth: '90px', padding: '8px 4px', backgroundColor: filterPlaystyleVal ? '#16a34a' : '#2a2a2a', color: '#fff', border: filterPlaystyleVal ? '1px solid #16a34a' : '1px solid #444', borderRadius: '6px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'center', opacity: filterPlaystyleVal ? 1 : 0.45, filter: filterPlaystyleVal ? 'none' : 'grayscale(100%)' }}>{filterPlaystyleVal ? formatTagText(t(filterPlaystyleVal)) : t('Off')}</button>
+                  <div style={{ flex: '1 1 40%', minWidth: '90px', padding: '8px 4px', backgroundColor: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: '6px', fontSize: '11px', fontWeight: 'bold', textAlign: 'center', opacity: 0.45, filter: 'grayscale(100%)', cursor: 'not-allowed' }}>{t('Off')}</div>
+                  <button type="button" onClick={() => handleToggleFilterValue('where')} style={{ flex: '1 1 40%', minWidth: '90px', padding: '8px 4px', backgroundColor: filterWhereVal ? '#d97706' : '#2a2a2a', color: '#fff', border: filterWhereVal ? '1px solid #d97706' : '1px solid #444', borderRadius: '6px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'center', opacity: filterWhereVal ? 1 : 0.45, filter: filterWhereVal ? 'none' : 'grayscale(100%)' }}>{filterWhereVal ? formatTagText(t(filterWhereVal)) : t('Off')}</button>
+                </div>
+              </div>)}
+            </div>
+          )}
+          <button onClick={handleRefresh} style={{ width: '36px', height: '36px', backgroundColor: '#2a2a2a', border: '1px solid #444', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title={t('refresh')}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
+          </button>
+        </div>
+      </header>
+
+      <div style={{ position: 'relative', zIndex: 11, height: '52px', minHeight: '52px', backgroundColor: '#1e1e1e', borderBottom: '1px solid #333', padding: '6px 12px' }}>
+        <form
+          onSubmit={(event) => { event.preventDefault(); void handleSendFlyingMessage(); }}
+          style={{ height: '100%', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <input
+            type="text"
+            value={flyingMessageText}
+            onChange={(event) => setFlyingMessageText(event.target.value)}
+            maxLength={200}
+            placeholder={flyingCopy.placeholder}
+            aria-label={flyingCopy.placeholder}
+            disabled={!currentUser || sendingFlyingMessage || flyingMessageWaitSeconds > 0}
+            style={{ flex: 1, minWidth: 0, height: '38px', borderRadius: '8px', border: '1px solid #3f4652', backgroundColor: '#121212', color: '#fff', padding: '0 12px', fontSize: '14px', outline: 'none' }}
+          />
+          <span style={{ minWidth: '42px', textAlign: 'center', color: effectiveFlyingMessagePrice > 0 ? '#f5c518' : '#4ade80', fontSize: '11px', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
+            {effectiveFlyingMessagePrice > 0 ? `${effectiveFlyingMessagePrice} ⭐` : flyingCopy.free}
+          </span>
+          <button
+            type="submit"
+            title={flyingCopy.send}
+            aria-label={flyingCopy.send}
+            disabled={!currentUser || !flyingMessageText.trim() || sendingFlyingMessage || flyingMessageWaitSeconds > 0}
+            style={{ width: '38px', height: '38px', flex: '0 0 38px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: '8px', color: '#fff', backgroundColor: (!currentUser || !flyingMessageText.trim() || sendingFlyingMessage || flyingMessageWaitSeconds > 0) ? '#3b4656' : '#007bff', cursor: 'pointer' }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+            </svg>
+          </button>
+        </form>
+        {flyingComposerStatus && (
+          <div role="status" aria-live="polite" style={{ position: 'absolute', top: '100%', left: '12px', right: '12px', zIndex: 12, padding: '5px 8px', borderRadius: '0 0 6px 6px', backgroundColor: '#202938', color: '#dbeafe', fontSize: '11px', textAlign: 'center', boxShadow: '0 3px 8px rgba(0,0,0,0.35)' }}>
+            {flyingComposerStatus}
+          </div>
+        )}
+      </div>
+
+      <main style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: view === 'grid' ? 'block' : 'none', height: '100%', flex: 1 }}>
+          <NearbyGridModule
+            users={gridFilteredUsers}
+            currentUserId={currentUser?.id || null}
+            isOnline={isOnlineWithin15Min}
+            passesFilter={checkFilterPass}
+            formatDistance={formatDistanceBigUnit}
+            onSelectProfile={handleCardClick}
+            t={t}
+          />
+        </div>
+
+        <div style={{ display: view === 'map' ? 'block' : 'none', height: '100%', width: '100%', position: 'relative', flex: 1, zIndex: 1 }}>
+          {hasOpenedMap && (
+            <Suspense fallback={<div role="status" style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#aaa' }}>{t('map')}</div>}>
+              <MapView
+                location={location}
+                currentUser={currentUser}
+                users={mapFilteredUsers}
+                gridVisible={gridVisible}
+                isOnline={isOnlineWithin15Min}
+                onSelectProfile={handleCardClick}
+              />
+            </Suspense>
+          )}
+        </div>
+      </main>
+
+      <div className="flying-message-layer" aria-hidden="true">
+        {flyingMessages.map((message) => {
+          const ageMs = Math.max(0, Date.now() - Date.parse(message.created_at));
+          if (ageMs >= 10_000) return null;
+          return (
+            <div
+              key={message.id}
+              className="flying-message-item"
+              style={{ top: `${flyingMessageLane(message.id)}%`, animationDelay: `-${ageMs / 1000}s` }}
+            >
+              <span className="flying-message-name">{message.from_name}</span>
+              <span className="flying-message-text">{message.text}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {activeProfile && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 9999, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }} onClick={() => setSelectedProfile(null)}>
+          <div style={{ position: 'relative', backgroundColor: '#1e1e1e', borderTopLeftRadius: '20px', borderTopRightRadius: '20px', padding: '24px 20px 40px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', boxSizing: 'border-box', maxHeight: '90vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            {!isViewingSelf && (
+              <div style={{ position: 'absolute', top: '14px', right: '14px', zIndex: 5, display: 'flex', gap: '6px' }}>
+                <button type="button" onClick={(e) => { e.stopPropagation(); setShowNoteBox((v) => !v); }} style={{ padding: '2px 8px', backgroundColor: noteDraft ? '#b45309' : '#2a2a2a', border: '1px solid #444', borderRadius: '6px', fontSize: '14px', cursor: 'pointer' }} title={t('privateNote')}>📝</button>
+                {isAdmin && <button type="button" onClick={(e) => { e.stopPropagation(); handleForceReset(); }} style={{ padding: '2px 8px', backgroundColor: '#7f1d1d', border: '1px solid #444', borderRadius: '6px', fontSize: '14px', cursor: 'pointer' }} title={t('forceReset')}>🔁</button>}
+              </div>
+            )}
+            {isViewingSelf && (
+              <div style={{ position: 'absolute', top: '14px', right: '14px', zIndex: 5, display: 'flex', gap: '6px' }}>
+                <button type="button" onClick={(e) => { e.stopPropagation(); handleResetProfile(); }} style={{ padding: '2px 8px', backgroundColor: '#1d4ed8', border: '1px solid #444', borderRadius: '6px', fontSize: '12px', color: '#fff', cursor: 'pointer' }} title={t('resetProfile')}>{t('resetProfile')}</button>
+              </div>
+            )}
+            {isViewingSelf && isAdmin && (
+              <div style={{ position: 'absolute', top: '14px', left: '14px', zIndex: 6 }}>
+                <button type="button" onClick={(e) => { e.stopPropagation(); setShowAdminMenu((v) => !v); }} style={{ width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#4b5563', border: '1px solid #6b7280', borderRadius: '6px', fontSize: '16px', color: '#fff', cursor: 'pointer', lineHeight: 1 }} title={t('adminMenu')} aria-label={t('adminMenu')}>⚙</button>
+                {showAdminMenu && (
+                  <div onClick={(e) => e.stopPropagation()} style={{ position: 'absolute', top: '34px', left: 0, backgroundColor: '#1e1e1e', border: '1px solid #444', borderRadius: '8px', padding: '6px', minWidth: '210px', boxShadow: '0 6px 20px rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <button type="button" onClick={() => { setShowAdminMenu(false); setShowVipPeriods(false); setShowRolesModal(true); loadRoles(); }} style={{ padding: '9px 10px', backgroundColor: '#2a2a2a', border: '1px solid #444', borderRadius: '6px', fontSize: '13px', color: '#fff', cursor: 'pointer', textAlign: 'left' }}>{t('adminVipList')}</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFlyingPriceDraft(String(flyingMessagePrice));
+                        setShowFlyingPriceEditor((value) => !value);
+                      }}
+                      style={{ padding: '9px 10px', backgroundColor: '#2a2a2a', border: '1px solid #444', borderRadius: '6px', fontSize: '12px', color: '#fff', cursor: 'pointer', textAlign: 'left' }}
+                    >
+                      {flyingCopy.priceLabel} · {flyingMessagePrice} ⭐
+                    </button>
+                    {showFlyingPriceEditor && (
+                      <form
+                        onSubmit={(event) => { event.preventDefault(); void handleSaveFlyingPrice(); }}
+                        style={{ display: 'flex', gap: '5px', padding: '2px 0 4px' }}
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          max={10000}
+                          step={1}
+                          value={flyingPriceDraft}
+                          onChange={(event) => setFlyingPriceDraft(event.target.value)}
+                          aria-label={flyingCopy.priceLabel}
+                          style={{ flex: 1, minWidth: 0, padding: '7px', backgroundColor: '#121212', color: '#fff', border: '1px solid #555', borderRadius: '5px', fontSize: '12px' }}
+                        />
+                        <button
+                          type="submit"
+                          disabled={savingFlyingPrice}
+                          style={{ padding: '7px 9px', backgroundColor: '#166534', border: '1px solid #15803d', borderRadius: '5px', color: '#fff', fontSize: '12px', fontWeight: 'bold', cursor: savingFlyingPrice ? 'wait' : 'pointer' }}
+                        >
+                          {savingFlyingPrice ? flyingCopy.sending : flyingCopy.save}
+                        </button>
+                      </form>
+                    )}
+                    <button type="button" onClick={() => setShowVipPeriods((v) => !v)} style={{ padding: '9px 10px', backgroundColor: '#2a2a2a', border: '1px solid #444', borderRadius: '6px', fontSize: '13px', color: '#fff', cursor: 'pointer', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}><span>{t('grantVipAll')}</span><span style={{ color: '#f5c518', fontSize: '11px' }}>{showVipPeriods ? '▾' : '▸'}</span></button>
+                    {globalVipActive && (<div style={{ fontSize: '10px', color: '#f5c518', padding: '0 4px' }}>{t('vip')} · {t('expires')} {new Date(globalVipUntil).toLocaleDateString()}</div>)}
+                    {showVipPeriods && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '2px 0 4px 10px', borderLeft: '2px solid #f5c518', marginLeft: '2px' }}>
+                        {([['1w', 7 * 864e5], ['1mo', 30 * 864e5], ['3mo', 90 * 864e5], ['6mo', 180 * 864e5], ['1y', 365 * 864e5]] as [string, number][]).map(([key, ms]) => (
+                          <button key={key} type="button" onClick={() => handleGrantGlobalVip(ms)} style={{ padding: '7px 10px', backgroundColor: '#3a2f00', border: '1px solid #665500', borderRadius: '6px', fontSize: '12px', color: '#f5c518', cursor: 'pointer', textAlign: 'left' }}>{t(`period_${key}`)}</button>
+                        ))}
+                        {globalVipActive && (<button type="button" onClick={() => handleGrantGlobalVip(0)} style={{ padding: '7px 10px', backgroundColor: '#3a1010', border: '1px solid #663333', borderRadius: '6px', fontSize: '12px', color: '#f87171', cursor: 'pointer', textAlign: 'left' }}>{t('revokeVipAll')}</button>)}
+                      </div>
+                    )}
+                    <button type="button" onClick={handleResetAll} style={{ padding: '9px 10px', backgroundColor: '#7f1d1d', border: '1px solid #991b1b', borderRadius: '6px', fontSize: '13px', color: '#fff', cursor: 'pointer', textAlign: 'left' }}>{t('forceResetAll')}</button>
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ width: '40px', height: '4px', backgroundColor: '#444', borderRadius: '2px', marginBottom: '16px' }} />
+            <div style={{ width: '100%', maxWidth: '420px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <div style={{ width: '90px', height: '90px', borderRadius: '50%', overflow: 'hidden', backgroundColor: '#222', border: '3px solid #007bff', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px', filter: passesFilterForActive ? 'none' : 'grayscale(100%)' }}>
+                {activeProfile.avatar ? (<img src={activeProfile.avatar} alt="Avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />) : (<span style={{ fontSize: '32px', fontWeight: 'bold', color: '#fff' }}>{activeProfile.name ? activeProfile.name.charAt(0).toUpperCase() : 'U'}</span>)}
+              </div>
+              <h2 style={{ fontSize: '20px', marginBottom: '6px', color: '#ffffff', fontWeight: 'bold' }}>{activeProfile.name}</h2>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', fontSize: '13px', color: '#ccc', marginBottom: '16px', alignItems: 'center' }}>
+                {!activeProfile.hide_age && (typeof activeProfile.age === 'number' ? activeProfile.age : calculateAge(activeProfile.dob)) && <span>{typeof activeProfile.age === 'number' ? activeProfile.age : calculateAge(activeProfile.dob)}</span>}
+                {activeProfile.zodiac || getZodiacSignEmoji(activeProfile.dob)}<span>&bull;</span><span>{activeProfile.height}</span><span>&bull;</span><span>{activeProfile.weight}</span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', fontSize: '13px', color: '#ccc', marginBottom: '16px', alignItems: 'center' }}>
+                {isViewingSelf ? <span>&nbsp;</span> : <><span>{formatDistanceBigUnit(activeProfile.distance)} {t('away')}</span><span>&bull;</span></>}<span style={{ color: '#4ade80' }}>{renderLastSeenBigUnit(formatLastSeenBigUnit(activeProfile.last_seen), t)}</span>
+              </div>
+              {isViewingSelf && (<div style={{ display: 'flex', width: '100%', justifyContent: 'center', marginBottom: '14px', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+                <button type="button" onClick={handleHideAgeToggle} style={{ padding: '8px 16px', backgroundColor: hideAge ? '#e11d48' : '#16a34a', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer' }}>{hideAge ? t('ageHidden') : t('ageShown')}</button>
+                {hideAgeExpiry && <span style={{ fontSize: '10px', color: '#888' }}>{t('expires')} {new Date(hideAgeExpiry).toLocaleDateString()}</span>}
+              </div>)}
+              {!isViewingSelf && (
+                <div style={{ width: '100%', marginTop: '16px', marginBottom: '8px', minHeight: '0' }}>
+                  {showNoteBox && (<>
+                    <textarea value={noteDraft} maxLength={100} onChange={(e) => savePrivateNote(activeProfile?.id, e.target.value)} placeholder={t('notePlaceholder')} rows={2} style={{ width: '100%', boxSizing: 'border-box', fontSize: '12px', padding: '6px 8px', backgroundColor: '#121212', color: '#eee', border: '1px solid #333', borderRadius: '6px', resize: 'none' }} />
+                    <div style={{ fontSize: '10px', color: '#666', textAlign: 'right' }}>{noteDraft.length}/100</div>
+                  </>)}
+                </div>
+              )}
+              <div style={{ width: '100%', borderTop: '1px solid #333', margin: '4px 0 16px 0' }} />
+              {targetIsManSeekingMan && (
+                <div style={{ display: 'flex', gap: '6px', width: '100%', justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, padding: '10px 4px', backgroundColor: '#e11d48', color: '#fff', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center', opacity: (isViewingSelf ? false : tagMatchesRole(filterRoleVal, activeProfile.role_pref || 'Versatile')) ? 1 : 0.3, filter: (isViewingSelf ? false : tagMatchesRole(filterRoleVal, activeProfile.role_pref || 'Versatile')) ? 'none' : 'grayscale(100%)' }}>{formatTagText(t(activeProfile.role_pref || 'Versatile'))}</div>
+                  <div style={{ flex: 1, padding: '10px 4px', backgroundColor: '#2563eb', color: '#fff', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center', opacity: (isViewingSelf ? false : tagMatchesSafety(filterSafetyVal, activeProfile.safety_pref || 'Safe')) ? 1 : 0.3, filter: (isViewingSelf ? false : tagMatchesSafety(filterSafetyVal, activeProfile.safety_pref || 'Safe')) ? 'none' : 'grayscale(100%)' }}>{formatTagText(t(activeProfile.safety_pref || 'Safe'))}</div>
+                  {isViewingSelf ? (<div style={{ flex: 1, position: 'relative', display: 'flex' }}>
+                    <button type="button" onClick={async () => { if (currentUser?.playstyle_pref !== 'Party' && currentUser?.playstyle_pref !== 'Party✓') return; const nextPlaystyle = playstylePref === 'Party✓' ? 'Party' : 'Party✓'; setPlaystylePref(nextPlaystyle); setFilterPlaystyleVal(nextPlaystyle); const updated = { ...activeProfile, playstyle_pref: nextPlaystyle }; setSelectedProfile(updated); await handleUpdateSelfField({ playstyle_pref: nextPlaystyle }); if (nextPlaystyle === 'Party✓') { setShowStuffBubble(true); setTimeout(() => setShowStuffBubble(false), 3000); } }} style={{ width: '100%', padding: '10px 4px', backgroundColor: '#16a34a', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: (currentUser?.playstyle_pref === 'Party' || currentUser?.playstyle_pref === 'Party✓') ? 'pointer' : 'not-allowed', textAlign: 'center', opacity: (currentUser?.playstyle_pref === 'Party' || currentUser?.playstyle_pref === 'Party✓') ? 1 : 0.4 }}>{formatTagText(t(playstylePref))}</button>
+                    {showStuffBubble && (<div style={{ position: 'absolute', bottom: '115%', left: '50%', transform: 'translateX(-50%)', backgroundColor: '#ffffff', color: '#000000', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', whiteSpace: 'nowrap', boxShadow: '0 2px 6px rgba(0,0,0,0.4)', zIndex: 20 }}>{t('iGotStuff')}<div style={{ position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', borderWidth: '4px', borderStyle: 'solid', borderColor: '#ffffff transparent transparent transparent' }} /></div>)}
+                  </div>) : (<div style={{ flex: 1, padding: '10px 4px', backgroundColor: '#16a34a', color: '#fff', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center', opacity: tagMatchesPlaystyle(filterPlaystyleVal, activeProfile.playstyle_pref || 'Clean') ? 1 : 0.3, filter: tagMatchesPlaystyle(filterPlaystyleVal, activeProfile.playstyle_pref || 'Clean') ? 'none' : 'grayscale(100%)' }}>{formatTagText(t(activeProfile.playstyle_pref || 'Clean'))}</div>)}
+                  <div style={{ flex: 1, padding: '10px 4px', backgroundColor: '#9333ea', color: '#fff', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center', opacity: (isViewingSelf ? false : tagMatchesHowMany(filterHowManyVal, activeProfile.how_many_pref || 'DoesntMatter')) ? 1 : 0.3, filter: (isViewingSelf ? false : tagMatchesHowMany(filterHowManyVal, activeProfile.how_many_pref || 'DoesntMatter')) ? 'none' : 'grayscale(100%)' }}>{formatTagText(t(activeProfile.how_many_pref || 'DoesntMatter'))}</div>
+                  {isViewingSelf ? (<button type="button" onClick={async () => { const nextWhere = wherePref === 'Host' ? 'Travel' : (wherePref === 'Travel' ? null : 'Host'); setWherePref(nextWhere); const updated = { ...activeProfile, where_pref: nextWhere }; setSelectedProfile(updated); await handleUpdateSelfField({ where_pref: nextWhere }); }} style={{ flex: 1, padding: '10px 4px', backgroundColor: '#d97706', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'center', opacity: 1 }}>{formatTagText(wherePref === null ? t('Anywhere') : t(wherePref))}</button>) : (<div style={{ flex: 1, padding: '10px 4px', backgroundColor: '#d97706', color: '#fff', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', textAlign: 'center', opacity: tagMatchesWhere(filterWhereVal, activeProfile.where_pref || null) ? 1 : 0.3, filter: tagMatchesWhere(filterWhereVal, activeProfile.where_pref || null) ? 'none' : 'grayscale(100%)' }}>{formatTagText(activeProfile.where_pref ? t(activeProfile.where_pref) : t('Anywhere'))}</div>)}
+                </div>
+              )}
+              {!isViewingSelf && passesFilterForActive && (<button type="button" onClick={() => handleStartChat(activeProfile)} style={{ marginTop: '20px', width: '100%', padding: '14px', backgroundColor: '#0088cc', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                {t('sendMessage')}
+              </button>)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ position: 'fixed', right: 0, top: '50%', transform: 'translateY(-50%)', zIndex: 5000, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '10px', backgroundColor: 'rgba(30, 30, 30, 0.85)', borderTopLeftRadius: '16px', borderBottomLeftRadius: '16px', boxShadow: '-2px 0px 8px rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}>
+        <button onClick={() => setIsGamesMenuOpen(!isGamesMenuOpen)} style={{ background: 'none', border: 'none', fontSize: '32px', cursor: 'pointer', padding: 0, lineHeight: 1, filter: 'drop-shadow(0px 2px 4px rgba(0,0,0,0.6))', transition: 'transform 0.2s ease', transform: isGamesMenuOpen ? 'scale(0.9)' : 'scale(1)' }} title={t('gamesApps')}>⭐</button>
+        {isGamesMenuOpen && (<div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '4px' }}>
+          <img src={bustaIcon} alt="Busta" onClick={() => handleOpenExternalApp('https://t.me/bustagift_xbot/app?startapp=pal1231127407')} style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover', cursor: 'pointer', border: '2px solid #555' }} />
+          <img src={tonflipIcon} alt="TonFlip" onClick={() => handleOpenExternalApp('https://app.tonflip.tg?r=mbab62ov')} style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover', cursor: 'pointer', border: '2px solid #555' }} />
+          <img src={photifyIcon} alt="Photify" onClick={() => handleOpenExternalApp('https://t.me/PhotifyAIOfficialBot?start=referral_1231127407')} style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover', cursor: 'pointer', border: '2px solid #555' }} />
+          <button
+            type="button"
+            onClick={() => void handleBuyRaffleTicket()}
+            disabled={!currentUser || rafflePurchasing}
+            aria-label={`${raffleCopy.button}, 100 Telegram Stars. ${raffleCopy.summary}. ${raffleCountdown}`}
+             style={{ position: 'relative', width: '82px', height: '82px', flex: '0 0 82px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, overflow: 'hidden', background: 'radial-gradient(circle at 32% 25%, #6b5310 0%, #332700 60%, #1e1e1e 100%)', border: '2px solid #f5c518', borderRadius: '50%', color: '#ffe082', cursor: rafflePurchasing ? 'wait' : 'pointer', opacity: rafflePurchasing ? 0.72 : 1, boxShadow: '0 2px 10px rgba(0,0,0,0.45), inset 0 0 0 3px rgba(245,197,24,0.14)' }}
+          >
+             <svg aria-hidden="true" width="50" height="50" viewBox="0 0 48 48" fill="none" style={{ position: 'absolute', inset: 0, margin: 'auto', opacity: 0.72 }}>
+               <path d="M9 12h30v7a5 5 0 0 0 0 10v7H9v-7a5 5 0 0 0 0-10v-7Z" stroke="currentColor" strokeWidth="2.4" strokeLinejoin="round" />
+               <path d="M24 14v20" stroke="currentColor" strokeWidth="2" strokeDasharray="2 3" />
+             </svg>
+             <span style={{ position: 'relative', zIndex: 1, padding: '3px 4px', borderRadius: '4px', backgroundColor: 'rgba(28,22,4,0.92)', color: '#fff5c7', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '7px', fontWeight: 800, fontVariantNumeric: 'tabular-nums', lineHeight: 1, letterSpacing: '-0.3px', whiteSpace: 'nowrap', boxShadow: '0 1px 4px rgba(0,0,0,0.55)' }}>
+               {raffleCountdown}
+             </span>
+          </button>
+        </div>)}
+      </div>
+
+      {raffleNotice && (
+        <div role="status" aria-live="polite" style={{ position: 'fixed', right: '12px', bottom: '72px', zIndex: 6000, maxWidth: 'min(260px, calc(100vw - 24px))', padding: '8px 10px', borderRadius: '8px', border: '1px solid #665500', backgroundColor: '#211b05', color: '#ffe082', fontSize: '12px', lineHeight: 1.35, textAlign: 'center', overflowWrap: 'anywhere', boxShadow: '0 4px 14px rgba(0,0,0,0.45)' }}>
+          {raffleNotice}
+        </div>
+      )}
+
+      <BottomNavigationModule
+        view={view}
+        gridVisible={gridVisible}
+        mapVisible={mapVisible}
+        walletConnected={isWalletConnected}
+        onGrid={handleToggleGrid}
+        onChat={() => handleOpenExternalApp(entry.chatUrl)}
+        onWallet={handleWalletClick}
+        onMap={handleToggleMap}
+        t={t}
+      />
+
+      {showRolesModal && (
+        <div onClick={() => setShowRolesModal(false)} style={{ position: 'fixed', inset: 0, zIndex: 3000, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: '420px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', backgroundColor: '#1e1e1e', border: '1px solid #444', borderRadius: '12px', boxShadow: '0 10px 40px rgba(0,0,0,0.7)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid #333' }}>
+              <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#fff' }}>{t('adminVipList')}</h2>
+              <button type="button" onClick={() => setShowRolesModal(false)} style={{ background: 'none', border: 'none', color: '#888', fontSize: '22px', cursor: 'pointer', lineHeight: 1 }} aria-label={t('close')}>×</button>
+            </div>
+
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <input value={newRoleUsername} onChange={(e) => setNewRoleUsername(e.target.value)} placeholder={t('roleUsernamePlaceholder')} style={{ width: '100%', boxSizing: 'border-box', padding: '9px 10px', backgroundColor: '#2a2a2a', border: '1px solid #444', borderRadius: '6px', color: '#fff', fontSize: '13px' }} />
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <select value={newRole} onChange={(e) => setNewRole(e.target.value as 'admin' | 'vip')} style={{ flex: 1, padding: '9px 10px', backgroundColor: '#2a2a2a', border: '1px solid #444', borderRadius: '6px', color: '#fff', fontSize: '13px' }}>
+                  <option value="vip">{t('vip')}</option>
+                  <option value="admin">{t('admin')}</option>
+                </select>
+                <button type="button" onClick={handleAddRole} style={{ padding: '9px 16px', backgroundColor: '#1d4ed8', border: '1px solid #1d4ed8', borderRadius: '6px', color: '#fff', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer' }}>{t('addRole')}</button>
+              </div>
+            </div>
+
+            <div style={{ overflowY: 'auto', padding: '8px 16px 16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px', backgroundColor: '#232323', border: '1px solid #333', borderRadius: '8px', opacity: 0.55 }}>
+                <span style={{ fontSize: '13px', color: '#aaa' }}>@mileschan852 <span style={{ fontSize: '11px', color: '#f5c518' }}>· {t('owner')}</span></span>
+                <span style={{ fontSize: '11px', color: '#666' }}>{t('admin')}</span>
+              </div>
+              {rolesLoading && <div role="status" style={{ fontSize: '12px', color: '#aaa', textAlign: 'center', padding: '10px' }}>{t('loading')}</div>}
+              {rolesLoadError && (
+                <div role="alert" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: '#fca5a5', fontSize: '12px', padding: '10px' }}>
+                  <span>{rolesLoadError}</span>
+                  <button type="button" onClick={() => void loadRoles()} style={{ padding: '4px 8px', border: '1px solid #555', borderRadius: '5px', background: '#2a2a2a', color: '#fff', cursor: 'pointer' }}>{t('refresh')}</button>
+                </div>
+              )}
+              {!rolesLoading && !rolesLoadError && roles
+                .filter((r) => (r.username || '').toLowerCase() !== 'mileschan852')
+                .map((r) => (
+                  <div key={r.username} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px', backgroundColor: '#232323', border: '1px solid #333', borderRadius: '8px' }}>
+                    <span style={{ fontSize: '13px', color: '#fff' }}>@{r.username} <span style={{ fontSize: '11px', color: r.role === 'admin' ? '#4ade80' : '#f5c518' }}>· {r.role === 'admin' ? t('admin') : t('vip')}</span></span>
+                    <button type="button" onClick={() => handleRemoveRole(r.username)} style={{ padding: '4px 10px', backgroundColor: '#7f1d1d', border: '1px solid #991b1b', borderRadius: '6px', color: '#fff', fontSize: '12px', cursor: 'pointer' }}>{t('removeRole')}</button>
+                  </div>
+                ))}
+              {!rolesLoading && !rolesLoadError && roles.filter((r) => (r.username || '').toLowerCase() !== 'mileschan852').length === 0 && (
+                <div style={{ fontSize: '12px', color: '#777', textAlign: 'center', padding: '10px' }}>{t('noRolesYet')}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+

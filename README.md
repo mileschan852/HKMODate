@@ -4,17 +4,17 @@ Public React/TypeScript source for the HKMO Date Telegram Mini App. This reposit
 
 ## Architecture
 
-HKMO Date and Who's Nearby use the same application shell and shared Cloudflare Worker/Supabase data. The Worker implementation, database migrations, server-side prize rules, and credentials remain in the private `dating-app-backend` repository. This repository deploys the HKMO Date GUI to GitHub Pages.
+HKMO Date and Who's Nearby share the application shell and production services. The Worker implementation, database operations, prize rules, and server-side credentials are maintained separately and are not included here.
 
 ## Customize the interface
 
-- `src/config/entries.ts` controls the profile setup and default entry for this deployment (`hkmo-date`).
-- `src/modules/` contains replaceable profile-completion, nearby-grid, map, and bottom-navigation modules.
+- `src/config/entries.ts` selects the HKMO Date profile setup for this deployment.
+- `src/modules/` contains the replaceable profile-completion, nearby-grid, map, and navigation modules.
 - `src/index.css` contains the app styles.
 
-GUI changes affect this deployment only. They do not change production database contents, raffle rules, prize pools, or server permissions. Public source cannot stop someone from editing a fork, but a fork does not inherit production credentials or backend access.
+GUI changes affect this deployment only. They do not change the production database, prize pools, or server permissions. A fork can change its own interface, but does not inherit production credentials or backend access.
 
-See [GUI module contracts](docs/gui-modules.md). Do not add Supabase service credentials, Telegram bot tokens, or server-only business rules to this repository.
+See [GUI module contracts](docs/gui-modules.md). Do not add Supabase service credentials or Telegram bot tokens to this public repository.
 
 ## Development
 
