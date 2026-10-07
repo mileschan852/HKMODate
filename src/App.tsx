@@ -2294,14 +2294,14 @@ export default function App() {
             onClick={() => void handleBuyRaffleTicket()}
             disabled={!currentUser || rafflePurchasing}
             aria-label={`${raffleCopy.button}, 100 Telegram Stars. ${raffleCopy.summary}. ${raffleCountdown}`}
-             style={{ position: 'relative', width: '82px', height: '82px', flex: '0 0 82px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, overflow: 'hidden', background: 'radial-gradient(circle at 32% 25%, #6b5310 0%, #332700 60%, #1e1e1e 100%)', border: '2px solid #f5c518', borderRadius: '50%', color: '#ffe082', cursor: rafflePurchasing ? 'wait' : 'pointer', opacity: rafflePurchasing ? 0.72 : 1, boxShadow: '0 2px 10px rgba(0,0,0,0.45), inset 0 0 0 3px rgba(245,197,24,0.14)' }}
+             style={{ position: 'relative', width: '42px', height: '42px', flex: '0 0 42px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, overflow: 'hidden', background: 'radial-gradient(circle at 32% 25%, #6b5310 0%, #332700 60%, #1e1e1e 100%)', border: '2px solid #f5c518', borderRadius: '50%', color: '#ffe082', cursor: rafflePurchasing ? 'wait' : 'pointer', opacity: rafflePurchasing ? 0.72 : 1, boxShadow: '0 2px 10px rgba(0,0,0,0.45), inset 0 0 0 3px rgba(245,197,24,0.14)' }}
           >
-             <svg aria-hidden="true" width="50" height="50" viewBox="0 0 48 48" fill="none" style={{ position: 'absolute', inset: 0, margin: 'auto', opacity: 0.72 }}>
+              <svg aria-hidden="true" width="30" height="30" viewBox="0 0 48 48" fill="none" style={{ position: 'absolute', inset: 0, margin: 'auto', opacity: 0.72 }}>
                <path d="M9 12h30v7a5 5 0 0 0 0 10v7H9v-7a5 5 0 0 0 0-10v-7Z" stroke="currentColor" strokeWidth="2.4" strokeLinejoin="round" />
                <path d="M24 14v20" stroke="currentColor" strokeWidth="2" strokeDasharray="2 3" />
              </svg>
-             <span style={{ position: 'relative', zIndex: 1, padding: '3px 4px', borderRadius: '4px', backgroundColor: 'rgba(28,22,4,0.92)', color: '#fff5c7', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '7px', fontWeight: 800, fontVariantNumeric: 'tabular-nums', lineHeight: 1, letterSpacing: '-0.3px', whiteSpace: 'nowrap', boxShadow: '0 1px 4px rgba(0,0,0,0.55)' }}>
-               {raffleCountdown}
+              <span style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px', padding: '2px 1px', borderRadius: '4px', backgroundColor: 'rgba(28,22,4,0.94)', color: '#fff5c7', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '6px', fontWeight: 800, fontVariantNumeric: 'tabular-nums', lineHeight: 1, letterSpacing: '-0.35px', whiteSpace: 'nowrap', boxShadow: '0 1px 4px rgba(0,0,0,0.55)' }}>
+                {raffleCountdown.split(' ').map((part, index) => <span key={index}>{part}</span>)}
              </span>
           </button>
         </div>)}
