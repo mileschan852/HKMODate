@@ -16,6 +16,10 @@ GUI changes affect this deployment only. They do not change the production datab
 
 See [GUI module contracts](docs/gui-modules.md). Do not add Supabase service credentials or Telegram bot tokens to this public repository.
 
+## Publishing
+
+GitHub Pages serves the prebuilt site from `main/docs`. Changes to the GUI source do not appear on the live site until the build output is refreshed. Run `npm run build`, copy the generated `dist` files into `docs/` without removing `docs/gui-modules.md`, then commit and push.
+
 ## Development
 
 ```bash
