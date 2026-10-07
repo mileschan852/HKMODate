@@ -1,34 +1,7 @@
-# GUI modules and entry configuration
+# HKMO Date configuration
 
-The GUI is separated from the authenticated Worker API. Both Telegram entrances continue to use the same profile table and the same `/api/profile` contract; this customization layer changes presentation and defaults, not database ownership or prize rules.
+This site keeps the HKMO Date launch URL and supplies its own public config.json. The small index page loads the shared GUI from the Who's Nearby template host. There is no duplicate React source or local GUI build to maintain here.
 
-## Entry configuration
+The config file selects the HKMO Date entry, maps the Telegram gaymode start parameter and mode=gay URL, and provides the profile defaults for this entrance. It contains no backend URL or secret. Server rules, authentication, raffle behavior, database access, and permissions remain in the private backend.
 
-Edit `src/config/entries.ts` to configure the existing entry modes:
-
-- `nearby` is the standard @WhosNearbyBot entrance.
-- `hkmo-date` is the `startapp=gaymode` / `?mode=gay` entrance for @HKMODate_bot.
-- Each entry has its own bot key, chat destination, profile defaults, identity-control presentation, title/warning translation keys, and profile section order.
-
-The profile setup page renders the required sections for the selected profile type. `sectionOrder` can reorder sections, but required sections are appended if omitted so the form continues to collect the values expected by the existing API. Existing saved profile values take precedence over entry defaults.
-
-The `lockIdentity` option disables the gender and seeking selectors in that entry's UI. It is a presentation setting, not an authorization rule. Do not use a client-side setting as a security or eligibility check; any rule that must be enforced for every client belongs in the Worker.
-
-## Replaceable UI modules
-
-The default module exports are collected in `src/modules/index.ts`:
-
-| Module | Source | Responsibility |
-| --- | --- | --- |
-| Profile completion | `src/modules/profile-completion/ProfileCompletionModule.tsx` | Renders the profile form using entry-specific configuration and controlled values. |
-| Nearby grid | `src/modules/nearby-grid/NearbyGridModule.tsx` | Renders nearby user tiles; filtering and profile selection are supplied by the app. |
-| Map | `src/modules/map/NearbyMapModule.tsx` | Map presentation, backed by the existing map component. |
-| Bottom navigation | `src/modules/navigation/BottomNavigationModule.tsx` | Grid, chat, wallet, and map navigation presentation. |
-
-To replace a module, keep its exported prop contract or update the import in `src/modules/index.ts` and the corresponding call site in `src/App.tsx`. Keep API requests, Telegram authentication, payment handling, role checks, profile validation, and state updates in the application/Worker layer rather than in a presentation module.
-
-## Public GUI/private backend boundary
-
-The current branch contains the GUI only. The Worker implementation, Supabase migrations, and backend tests are maintained in the private `dating-app-backend` repository. The browser sends Telegram-authenticated requests to the existing Worker API; its endpoint is an application constant rather than a GUI module setting. Supabase service credentials and server-side prize rules must remain in the Worker.
-
-The supported customization surface is the entry configuration and replaceable UI modules above. Those changes do not alter the production database, raffle rules, prize pool, or server permissions. Since the GUI source is public, this cannot prevent someone from editing their own fork; a fork does not inherit production secrets or gain access to production data. Older public commits and existing forks are not rewritten by this split and may still contain old backend source.
+To change the GUI or its modules, edit mileschan852/WhosNearbyBot and publish that template. Keep this repository's loader pointed at the stable shared asset URLs so the existing Telegram launch links continue to work.

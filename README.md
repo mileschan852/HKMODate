@@ -1,30 +1,15 @@
-# HKMO Date GUI
+# HKMO Date launch shell and configuration
 
-Public React/TypeScript source for the HKMO Date Telegram Mini App. This repository is the independently deployed GUI shell; it does not contain the production backend.
+This repository keeps the existing HKMO Date GitHub Pages URL and its public entry configuration. It does not contain a duplicate React app or the private production backend.
 
-## Architecture
+## Files to maintain
 
-HKMO Date and Who's Nearby share the application shell and production services. The Worker implementation, database operations, prize rules, and server-side credentials are maintained separately and are not included here.
+- docs/config.json contains this site's public entry and profile-setup defaults.
+- docs/index.html loads the shared GUI from the Who's Nearby template host.
+- docs/tonconnect-manifest.json is the wallet manifest configured by docs/config.json.
 
-## Customize the interface
+To change the interface or app modules, update the shared GUI in mileschan852/WhosNearbyBot. Its Pages build publishes stable shared JS/CSS assets; this HKMO Date loader then uses those assets without copying or rebuilding the GUI here.
 
-- `src/config/entries.ts` selects the HKMO Date profile setup for this deployment.
-- `src/modules/` contains the replaceable profile-completion, nearby-grid, map, and navigation modules.
-- `src/index.css` contains the app styles.
+Changes to docs/config.json are limited to public presentation and profile defaults. Do not put credentials, a backend URL, bot tokens, Supabase values, or server-side rules in this repository. The app continues to use the same authenticated Worker API and production data.
 
-GUI changes affect this deployment only. They do not change the production database, prize pools, or server permissions. A fork can change its own interface, but does not inherit production credentials or backend access.
-
-See [GUI module contracts](docs/gui-modules.md). Do not add Supabase service credentials or Telegram bot tokens to this public repository.
-
-## Publishing
-
-GitHub Pages serves the prebuilt site from `main/docs`. Changes to the GUI source do not appear on the live site until the build output is refreshed. Run `npm run build`, copy the generated `dist` files into `docs/` without removing `docs/gui-modules.md`, then commit and push.
-
-## Development
-
-```bash
-npm install
-npm run dev
-npm run build
-npm run lint
-```
+The Pages source is main/docs, so changes to these files are published from the main branch while the launch URL remains https://mileschan852.github.io/HKMODate/.

@@ -3,14 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#111111" />
     <title>HKMO Date</title>
-
-    <!-- Telegram Web App SDK -->
+    <link rel="preconnect" href="https://mileschan852.github.io" crossorigin />
+    <link rel="stylesheet" crossorigin="anonymous" href="https://mileschan852.github.io/WhosNearbyBot/assets/shared-gui.css" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script type="module" crossorigin src="./assets/index-B3R_Sihf.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-1S7UKnou.css">
+    <script>
+      window.setTimeout(() => {
+        const root = document.getElementById('root');
+        if (root && root.dataset.appMounted !== 'true') {
+          root.innerHTML = '<main role="alert" style="padding:24px;color:#fff;background:#111;min-height:100vh;font-family:system-ui,sans-serif"><h1>HKMO Date did not load</h1><p>Check your connection and reload this page.</p><button type="button" onclick="window.location.reload()">Reload</button></main>';
+        }
+      }, 12000);
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root" data-app-mounted="false"><main style="padding:24px;color:#fff;background:#111;min-height:100vh;font-family:system-ui,sans-serif">Loading HKMO Date…</main></div>
+    <script type="module" crossorigin="anonymous" src="https://mileschan852.github.io/WhosNearbyBot/assets/shared-gui.js"></script>
   </body>
 </html>

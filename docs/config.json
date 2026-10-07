@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "defaultEntryId": "hkmo-date",
+  "defaultStartParam": "gaymode",
+  "tonConnectManifestUrl": "https://mileschan852.github.io/HKMODate/tonconnect-manifest.json",
+  "startParamEntries": {
+    "gaymode": "hkmo-date"
+  },
+  "queryEntries": {
+    "mode": {
+      "gay": "hkmo-date"
+    }
+  },
+  "entries": {
+    "hkmo-date": {
+      "id": "hkmo-date",
+      "label": "HKMO Date",
+      "botKey": "botA",
+      "chatUrl": "https://t.me/hkmochat",
+      "useConfiguredLabelForHeader": true,
+      "profileSetup": {
+        "titleKey": "completeProfile",
+        "warningKey": "profileWarning",
+        "defaultGender": "man",
+        "defaultSeeking": "men",
+        "lockIdentity": true,
+        "sectionOrder": [
+          "birthdate",
+          "identity",
+          "measurements",
+          "preferences",
+          "mode"
+        ]
+      }
+    }
+  }
+}
