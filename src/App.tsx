@@ -2084,43 +2084,6 @@ export default function App() {
         </div>
       </header>
 
-      <div style={{ position: 'relative', zIndex: 11, height: '52px', minHeight: '52px', backgroundColor: '#1e1e1e', borderBottom: '1px solid #333', padding: '6px 12px' }}>
-        <form
-          onSubmit={(event) => { event.preventDefault(); void handleSendFlyingMessage(); }}
-          style={{ height: '100%', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <input
-            type="text"
-            value={flyingMessageText}
-            onChange={(event) => setFlyingMessageText(event.target.value)}
-            maxLength={200}
-            placeholder={flyingCopy.placeholder}
-            aria-label={flyingCopy.placeholder}
-            disabled={!currentUser || sendingFlyingMessage || flyingMessageWaitSeconds > 0}
-            style={{ flex: 1, minWidth: 0, height: '38px', borderRadius: '8px', border: '1px solid #3f4652', backgroundColor: '#121212', color: '#fff', padding: '0 12px', fontSize: '14px', outline: 'none' }}
-          />
-          <span style={{ minWidth: '42px', textAlign: 'center', color: effectiveFlyingMessagePrice > 0 ? '#f5c518' : '#4ade80', fontSize: '11px', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-            {effectiveFlyingMessagePrice > 0 ? `${effectiveFlyingMessagePrice} ⭐` : flyingCopy.free}
-          </span>
-          <button
-            type="submit"
-            title={flyingCopy.send}
-            aria-label={flyingCopy.send}
-            disabled={!currentUser || !flyingMessageText.trim() || sendingFlyingMessage || flyingMessageWaitSeconds > 0}
-            style={{ width: '38px', height: '38px', flex: '0 0 38px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: '8px', color: '#fff', backgroundColor: (!currentUser || !flyingMessageText.trim() || sendingFlyingMessage || flyingMessageWaitSeconds > 0) ? '#3b4656' : '#007bff', cursor: 'pointer' }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
-            </svg>
-          </button>
-        </form>
-        {flyingComposerStatus && (
-          <div role="status" aria-live="polite" style={{ position: 'absolute', top: '100%', left: '12px', right: '12px', zIndex: 12, padding: '5px 8px', borderRadius: '0 0 6px 6px', backgroundColor: '#202938', color: '#dbeafe', fontSize: '11px', textAlign: 'center', boxShadow: '0 3px 8px rgba(0,0,0,0.35)' }}>
-            {flyingComposerStatus}
-          </div>
-        )}
-      </div>
-
       <main style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: view === 'grid' ? 'block' : 'none', height: '100%', flex: 1 }}>
           <NearbyGridModule
@@ -2324,6 +2287,43 @@ export default function App() {
         onMap={handleToggleMap}
         t={t}
       />
+
+      <div style={{ position: 'relative', zIndex: 11, height: '52px', minHeight: '52px', backgroundColor: '#1e1e1e', borderTop: '1px solid #333', padding: '6px 12px' }}>
+        <form
+          onSubmit={(event) => { event.preventDefault(); void handleSendFlyingMessage(); }}
+          style={{ height: '100%', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <input
+            type="text"
+            value={flyingMessageText}
+            onChange={(event) => setFlyingMessageText(event.target.value)}
+            maxLength={200}
+            placeholder={flyingCopy.placeholder}
+            aria-label={flyingCopy.placeholder}
+            disabled={!currentUser || sendingFlyingMessage || flyingMessageWaitSeconds > 0}
+            style={{ flex: 1, minWidth: 0, height: '38px', borderRadius: '8px', border: '1px solid #3f4652', backgroundColor: '#121212', color: '#fff', padding: '0 12px', fontSize: '14px', outline: 'none' }}
+          />
+          <span style={{ minWidth: '42px', textAlign: 'center', color: effectiveFlyingMessagePrice > 0 ? '#f5c518' : '#4ade80', fontSize: '11px', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
+            {effectiveFlyingMessagePrice > 0 ? `${effectiveFlyingMessagePrice} ⭐` : flyingCopy.free}
+          </span>
+          <button
+            type="submit"
+            title={flyingCopy.send}
+            aria-label={flyingCopy.send}
+            disabled={!currentUser || !flyingMessageText.trim() || sendingFlyingMessage || flyingMessageWaitSeconds > 0}
+            style={{ width: '38px', height: '38px', flex: '0 0 38px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: '8px', color: '#fff', backgroundColor: (!currentUser || !flyingMessageText.trim() || sendingFlyingMessage || flyingMessageWaitSeconds > 0) ? '#3b4656' : '#007bff', cursor: 'pointer' }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+            </svg>
+          </button>
+        </form>
+        {flyingComposerStatus && (
+          <div role="status" aria-live="polite" style={{ position: 'absolute', bottom: 'calc(100% + 60px)', left: '12px', right: '12px', zIndex: 12, padding: '5px 8px', borderRadius: '6px', backgroundColor: '#202938', color: '#dbeafe', fontSize: '11px', textAlign: 'center', boxShadow: '0 -3px 8px rgba(0,0,0,0.35)' }}>
+            {flyingComposerStatus}
+          </div>
+        )}
+      </div>
 
       {showRolesModal && (
         <div onClick={() => setShowRolesModal(false)} style={{ position: 'fixed', inset: 0, zIndex: 3000, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
