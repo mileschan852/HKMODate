@@ -1,15 +1,23 @@
 # HKMO Date launch shell and configuration
 
-This repository keeps the existing HKMO Date GitHub Pages URL and its public entry configuration. It does not contain a duplicate React app or the private production backend.
+HKMO Date is a separate Telegram launch shell that uses the shared GUI from [Who's Nearby](https://github.com/mileschan852/WhosNearbyBot). Who's Nearby is the default base template and canonical source for the React GUI, UI modules, styles, and shared asset build. This repository keeps HKMO Date's launch URL and per-site settings; it is not a second GUI template.
 
-## Files to maintain
+## Repository responsibilities
 
-- docs/config.json contains this site's public entry and profile-setup defaults.
-- docs/index.html loads the shared GUI from the Who's Nearby template host.
-- docs/tonconnect-manifest.json is the wallet manifest configured by docs/config.json.
+- `docs/config.json` stores HKMO Date's public entry and profile setup settings.
+- `docs/index.html` loads the stable shared GUI assets published by Who's Nearby.
+- `docs/tonconnect-manifest.json` is the public wallet manifest named in the config.
+- The shared GUI, modules, and styles are edited in [Who's Nearby](https://github.com/mileschan852/WhosNearbyBot).
+- The private Worker, Supabase migrations, and server-side rules are maintained separately in `dating-app-backend`.
 
-To change the interface or app modules, update the shared GUI in mileschan852/WhosNearbyBot. Its Pages build publishes stable shared JS/CSS assets; this HKMO Date loader then uses those assets without copying or rebuilding the GUI here.
+For the complete list of config fields and a working example, read [HKMO Date configuration](configuration.md). For the shared module boundaries, see [GUI modules](gui-modules.md).
 
-Changes to docs/config.json are limited to public presentation and profile defaults. Do not put credentials, a backend URL, bot tokens, Supabase values, or server-side rules in this repository. The app continues to use the same authenticated Worker API and production data.
+## Editing and publishing
 
-The Pages source is main/docs, so changes to these files are published from the main branch while the launch URL remains https://mileschan852.github.io/HKMODate/.
+Edit this repository's `docs/config.json` only for HKMO Date-specific settings such as entry routing, profile defaults, and its wallet manifest URL. Push to `main`; GitHub Pages serves `main:/docs` and keeps the public launch URL at https://mileschan852.github.io/HKMODate/.
+
+To change the GUI or replace a module, edit and push `mileschan852/WhosNearbyBot`. Its Pages build publishes the stable shared assets consumed by this loader; do not copy the React source or edit generated bundles here. Existing browser caches may take up to 10 minutes to refresh shared assets.
+
+## Security boundary
+
+The config is public. Do not put credentials, bot tokens, backend URLs, Supabase values, or server-side rules in this repository. The app continues to use the authenticated Worker API and existing production data. Public presentation settings do not grant access to production secrets or let a fork change production data.
