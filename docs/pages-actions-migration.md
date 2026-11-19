@@ -8,9 +8,15 @@ The public HKMO Date URL remains
 Its deployment job remains skipped unless the repository variable
 `HKMODATE_PAGES_ACTIONS_ENABLED` is explicitly set to `true`.
 
-The workflow validates the existing shell and manifest, uploads the current
-`docs/` output, and deploys only after the repository variable and manual
-workflow-dispatch approval are satisfied. It retains the existing page title,
+Verified on 20 November 2026 through GitHub’s Pages and Actions APIs: Pages is
+set to `main:/docs`; the repository variable is absent; the latest workflow's
+build job succeeded and its Actions deploy job was skipped. The existing
+branch-based Pages publication remains the production path and continues on
+pushes to `main`.
+
+The workflow validates the shell and manifest and uploads the current `docs/`
+output. Its optional Actions deployment requires both the repository variable
+and a manual workflow-dispatch approval. It retains the existing page title,
 TonConnect manifest, fallback GUI version, and icon URL.
 
 The workflow pins its GitHub Actions to commit SHAs. No Pages setting is

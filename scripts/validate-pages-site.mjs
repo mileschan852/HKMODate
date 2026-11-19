@@ -20,6 +20,12 @@ async function main() {
   const manifest = JSON.parse(manifestText);
   const config = JSON.parse(configText);
   const errors = [];
+  const hkmoEntry = config.entries?.["hkmo-date"];
+  const starMenuItems = Array.isArray(hkmoEntry?.starMenuItems)
+    ? hkmoEntry.starMenuItems
+    : [];
+  const tonflip = starMenuItems.find((item) => item?.id === "tonflip");
+  const photify = starMenuItems.find((item) => item?.id === "photify");
 
   if (manifest.url !== expectedSiteUrl) {
     errors.push(`tonconnect-manifest.json must keep the public URL ${expectedSiteUrl}.`);
@@ -29,6 +35,12 @@ async function main() {
   }
   if (config.tonConnectManifestUrl !== `${expectedSiteUrl}tonconnect-manifest.json`) {
     errors.push("config.json must keep the TonConnect manifest on the existing HKMO Date Pages URL.");
+  }
+  if (tonflip?.url !== "https://t.me/SpaceOdysseyPlay_bot?start=ref_1231127407") {
+    errors.push("config.json must use the approved TonFlip bot link.");
+  }
+  if (photify?.url !== "https://t.me/PhotifyAIOfficialBot?start=referral_1231127407") {
+    errors.push("config.json must keep the approved Photify bot link.");
   }
   if (!indexHtml.includes("<title>HKMO Date</title>")) {
     errors.push("docs/index.html must retain the HKMO Date page title.");

@@ -9,19 +9,19 @@ wallet manifest. The shared interface is maintained in the
 The live Pages URL remains
 `https://mileschan852.github.io/HKMODate/`. The current source is still
 `main:/docs`; editing `docs/config.json` and pushing to `main` continues to
-publish the HKMO Date shell.
+publish the HKMO Date shell. GitHub’s Pages settings confirmed this branch-based
+source on 20 November 2026.
 
-## Optional GitHub Actions workflow
+## GitHub Actions validation
 
-`.github/workflows/pages.yml` validates the shell and can deploy the existing
-`docs/` output through GitHub Actions. Deployment remains disabled unless the
-repository variable `HKMODATE_PAGES_ACTIONS_ENABLED` is explicitly set to
-`true`. Adding the workflow does not change the current Pages source.
+`.github/workflows/pages.yml` validates the shell and uploads a Pages artifact.
+Its Actions deploy job is currently skipped because
+`HKMODATE_PAGES_ACTIONS_ENABLED` is not configured. This does not disable the
+existing automatic `main:/docs` deployment.
 
-Do not switch the Pages source until the workflow has been reviewed and the
-owner approves the migration. See
-[`docs/pages-actions-migration.md`](docs/pages-actions-migration.md) for the
-settings sequence and rollback steps.
+No Pages source change is part of this audit. See
+[`docs/pages-actions-migration.md`](docs/pages-actions-migration.md) before
+changing the production deployment method.
 
 To update the entry, edit `docs/config.json` for HKMO Date's public
 entry/profile settings. The shared interface is maintained in the
